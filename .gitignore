@@ -1,0 +1,43 @@
+# Datasets
+data/
+datasets/
+dataset/
+*.csv
+*.json
+*.txt
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.parquet
+
+# Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+.venv/
+venv/
+env/
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Model checkpoints
+checkpoints/
+models/
+*.pth
+*.pt
+*.ckpt
