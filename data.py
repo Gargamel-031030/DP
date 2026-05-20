@@ -49,8 +49,8 @@ def get_clients_datasets(train_dataset, num_clients):
 def get_mnist_datasets():
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
 
-    train_dataset = datasets.MNIST('./data/MNIST', train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST('./data/MNIST', train=False, download=True, transform=transform)
+    train_dataset = datasets.MNIST('./data/mnist', train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST('./data/mnist', train=False, download=True, transform=transform)
 
     return train_dataset, test_dataset
 

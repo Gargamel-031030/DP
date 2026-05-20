@@ -21,7 +21,6 @@ import pandas as pd
 random.seed(10)
 
 args = parse_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
 
 num_clients = args.num_clients
 local_epoch = args.local_epoch
@@ -41,7 +40,14 @@ deavg = args.deavg
 
 nm_decay = args.nm_decay
 decay_factor = args.decay_factor
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+if torch.cuda.is_available():
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device)
+    device = torch.device("cuda")
+    print(f"Using GPU: cuda:{args.device}")
+else:
+    device = torch.device("cpu")
+    print("GPU not available, using CPU")
 
 if args.store:
     saved_stdout = sys.stdout
@@ -667,8 +673,10 @@ def main():
                 global_acc.append(global_accuracy)
 
         acc = pd.DataFrame(global_acc)
+        csv_dir = f'./{dataset}/'
+        os.makedirs(csv_dir, exist_ok=True)
         file_name = (
-                f'./{dataset}/'
+                f'{csv_dir}'
                 f'scen3_AdapL_'
                 f'{dataset}_'
                 f'numclients_{num_clients}_without2.csv'
