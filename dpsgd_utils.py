@@ -1,10 +1,13 @@
+from pathlib import Path
 import numpy as np
 
 np.random.seed(10)
+BASE_DIR = Path(__file__).resolve().parent
 
 def set_epsilons(filename, N):
     print('=========Epsilons Info========')
-    with open('epsfiles/{}.txt'.format(filename), 'r') as rfile:
+    eps_path = BASE_DIR / 'epsfiles' / f'{filename}.txt'
+    with open(eps_path, 'r') as rfile:
         lines = rfile.readlines()
         num_lines = len(lines)
 

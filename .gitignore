@@ -2,9 +2,17 @@
 data/
 datasets/
 dataset/
+mnist/
+fmnist/
+cifar10/
+cifar100/
+CIFAR10/
+CIFAR100/
 *.csv
 *.json
 *.txt
+!epsfiles/
+!epsfiles/*.txt
 *.npy
 *.npz
 *.h5
@@ -34,10 +42,17 @@ Thumbs.db
 
 # Logs
 *.log
+txt/
+img/
+wandb/
+runs/
+outputs/
+results/
 
 # Model checkpoints
 checkpoints/
 models/
+saved_models/
 *.pth
 *.pt
 *.ckpt

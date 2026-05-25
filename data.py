@@ -1,4 +1,5 @@
 import torch.random
+from pathlib import Path
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, Dataset, SubsetRandomSampler
 from fedlab.utils.dataset.functional import hetero_dir_partition
@@ -7,6 +8,8 @@ from options import parse_args
 import numpy as np
 
 args = parse_args()
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
 
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
@@ -41,7 +44,7 @@ def get_clients_datasets(train_dataset, num_clients):
         client_indices = indices[last_index: last_index+client_example_nums[cid]]
         client_dataset = Subset(train_dataset, client_indices)
         clients_datasets.append(client_dataset)
-        last_index = client_example_nums[cid]
+        last_index += client_example_nums[cid]
 
     return clients_datasets
 
@@ -49,8 +52,9 @@ def get_clients_datasets(train_dataset, num_clients):
 def get_mnist_datasets():
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
 
-    train_dataset = datasets.MNIST('./data/mnist', train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST('./data/mnist', train=False, download=True, transform=transform)
+    mnist_root = str(DATA_DIR / "mnist")
+    train_dataset = datasets.MNIST(mnist_root, train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST(mnist_root, train=False, download=True, transform=transform)
 
     return train_dataset, test_dataset
 
@@ -58,16 +62,18 @@ def get_mnist_datasets():
 def get_fmnist_datasets():
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
-    train_dataset = datasets.FashionMNIST('./data/FMNIST', train=True, download=True, transform=transform)
-    test_dataset = datasets.FashionMNIST('./data/FMNIST', train=False, download=True, transform=transform)
+    fmnist_root = str(DATA_DIR / "FMNIST")
+    train_dataset = datasets.FashionMNIST(fmnist_root, train=True, download=True, transform=transform)
+    test_dataset = datasets.FashionMNIST(fmnist_root, train=False, download=True, transform=transform)
 
     return train_dataset, test_dataset
 
 def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
 
-    train_dataset = datasets.FashionMNIST('./data/FMNIST', train=True, download=True, transform=transform)
-    test_dataset = datasets.FashionMNIST('./data/FMNIST', train=False, download=True, transform=transform)
+    fmnist_root = str(DATA_DIR / "FMNIST")
+    train_dataset = datasets.FashionMNIST(fmnist_root, train=True, download=True, transform=transform)
+    test_dataset = datasets.FashionMNIST(fmnist_root, train=False, download=True, transform=transform)
 
     num_classes = len(np.unique(train_dataset.targets))
 
@@ -102,16 +108,39 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
     return train_loaders, test_loaders, client_data_sizes
 
 #CIFAR10-------------------------------------------------------------------------------------------------------
-def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
-    transform = transforms.Compose([
+def get_cifar10_datasets():
+    train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
 
-    train_dataset = datasets.CIFAR10(root='./data/CIFAR10', train=True, download=True, transform=transform)
-    test_dataset = datasets.CIFAR10(root='./data/CIFAR10', train=False, download=True, transform=transform)
+    cifar10_root = str(DATA_DIR / "CIFAR10")
+    train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
+
+    return train_dataset, test_dataset
+
+def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32, padding=4),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    cifar10_root = str(DATA_DIR / "CIFAR10")
+    train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
 
     num_classes = len(np.unique(train_dataset.targets))
 

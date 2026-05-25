@@ -2,12 +2,13 @@ import os
 import sys
 import random
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
 import copy
 from torch.utils.data import DataLoader
-from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_CIFAR10, get_noniid_fmnist
+from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_CIFAR10, get_noniid_fmnist
 from dlg import dlg_attack
 from model import *
 from client import Client
@@ -19,6 +20,7 @@ import torch.optim as optim
 import pandas as pd
 
 random.seed(10)
+BASE_DIR = Path(__file__).resolve().parent
 
 args = parse_args()
 
@@ -52,14 +54,14 @@ else:
 if args.store:
     saved_stdout = sys.stdout
     # 构建目录路径
-    dir_path = f'./txt/{target_epsilon}/'
+    dir_path = BASE_DIR / 'txt' / target_epsilon
 
     # 如果目录不存在，创建目录
     os.makedirs(dir_path, exist_ok=True)
 
     # 构建文件路径和文件名
     file_name = (
-        f'{dir_path}'
+        f'{dir_path}/'
         f'dataset_{dataset}_'
         f'num_clients_{num_clients}_'
         f'local_epoch_{local_epoch}_'
@@ -530,14 +532,15 @@ def main():
             # clients_models = [LeNet(channel=channel, hidden=hidden, num_classes=num_classes) for _ in range(num_clients)]
             # global_model = LeNet(channel=channel, hidden=hidden, num_classes=num_classes)
         elif dataset == 'fmnist':
-            # train_dataset, test_dataset = get_fmnist_datasets()
-            # clients_train_sets = get_clients_datasets(train_dataset, num_clients)
-            # client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
-            # clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
-            #                              clients_train_sets]
-            # clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
-            ## noniid-fmnist
-            clients_train_loaders, clients_test_loaders, client_data_sizes = get_noniid_fmnist(args.dir_alpha, num_clients)
+            if args.iid:
+                train_dataset, test_dataset = get_fmnist_datasets()
+                clients_train_sets = get_clients_datasets(train_dataset, num_clients)
+                client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
+                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
+                                             clients_train_sets]
+                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+            else:
+                clients_train_loaders, clients_test_loaders, client_data_sizes = get_noniid_fmnist(args.dir_alpha, num_clients)
 
             clients_models = [fmnistNet() for _ in range(num_clients)]
             global_model = fmnistNet()
@@ -547,7 +550,15 @@ def main():
             # clients_models = [LeNet(channel=channel, hidden=hidden, num_classes=num_classes) for _ in range(num_clients)]
             # global_model = LeNet(channel=channel, hidden=hidden, num_classes=num_classes)
         elif dataset == 'cifar10':
-            clients_train_loaders, clients_test_loaders, client_data_sizes = get_CIFAR10(args.dir_alpha, num_clients)
+            if args.iid:
+                train_dataset, test_dataset = get_cifar10_datasets()
+                clients_train_sets = get_clients_datasets(train_dataset, num_clients)
+                client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
+                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
+                                             clients_train_sets]
+                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+            else:
+                clients_train_loaders, clients_test_loaders, client_data_sizes = get_CIFAR10(args.dir_alpha, num_clients)
 
             clients_models = [cifarNet() for _ in range(num_clients)]
             global_model = cifarNet()
@@ -673,10 +684,10 @@ def main():
                 global_acc.append(global_accuracy)
 
         acc = pd.DataFrame(global_acc)
-        csv_dir = f'./{dataset}/'
+        csv_dir = BASE_DIR / dataset
         os.makedirs(csv_dir, exist_ok=True)
         file_name = (
-                f'{csv_dir}'
+                f'{csv_dir}/'
                 f'scen3_AdapL_'
                 f'{dataset}_'
                 f'numclients_{num_clients}_without2.csv'
