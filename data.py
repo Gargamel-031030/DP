@@ -108,39 +108,26 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
     return train_loaders, test_loaders, client_data_sizes
 
 #CIFAR10-------------------------------------------------------------------------------------------------------
-def get_cifar10_datasets():
+def get_cifar_transforms(mean, std):
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize(mean, std),
     ])
     test_transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Normalize(mean, std),
     ])
 
-    cifar10_root = str(DATA_DIR / "CIFAR10")
-    train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
-    test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
+    return train_transform, test_transform
 
-    return train_dataset, test_dataset
 
-def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(32, padding=4),
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
+def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
+    train_transform, test_transform = get_cifar_transforms(mean, std)
 
-    cifar10_root = str(DATA_DIR / "CIFAR10")
-    train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
-    test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
+    train_dataset = dataset_cls(root=root, train=True, download=True, transform=train_transform)
+    test_dataset = dataset_cls(root=root, train=False, download=True, transform=test_transform)
 
     num_classes = len(np.unique(train_dataset.targets))
 
@@ -173,3 +160,51 @@ def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[
         #     print(f"Label {label}: {percentage:.2f}%")
 
     return train_loaders, test_loaders, client_data_sizes
+
+
+def get_cifar10_datasets():
+    train_transform, test_transform = get_cifar_transforms(
+        (0.4914, 0.4822, 0.4465),
+        (0.2023, 0.1994, 0.2010),
+    )
+
+    cifar10_root = str(DATA_DIR / "CIFAR10")
+    train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
+
+    return train_dataset, test_dataset
+
+def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
+    return get_cifar_loaders(
+        datasets.CIFAR10,
+        str(DATA_DIR / "CIFAR10"),
+        (0.4914, 0.4822, 0.4465),
+        (0.2023, 0.1994, 0.2010),
+        alpha,
+        num_clients,
+    )
+
+
+#CIFAR100------------------------------------------------------------------------------------------------------
+def get_cifar100_datasets():
+    train_transform, test_transform = get_cifar_transforms(
+        (0.5071, 0.4867, 0.4408),
+        (0.2675, 0.2565, 0.2761),
+    )
+
+    cifar100_root = str(DATA_DIR / "CIFAR100")
+    train_dataset = datasets.CIFAR100(root=cifar100_root, train=True, download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR100(root=cifar100_root, train=False, download=True, transform=test_transform)
+
+    return train_dataset, test_dataset
+
+
+def get_CIFAR100(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
+    return get_cifar_loaders(
+        datasets.CIFAR100,
+        str(DATA_DIR / "CIFAR100"),
+        (0.5071, 0.4867, 0.4408),
+        (0.2675, 0.2565, 0.2761),
+        alpha,
+        num_clients,
+    )

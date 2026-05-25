@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument('--no_clip', action='store_true')
     parser.add_argument('--no_noise', action='store_true')
 
-    parser.add_argument('--dataset', type=str, default='cifar10')
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['mnist', 'fmnist', 'cifar10', 'cifar100'])
     parser.add_argument('--iid', action='store_true', default=True, help="Use IID partition for supported datasets")
     parser.add_argument('--no-iid', dest='iid', action='store_false', help="Use non-IID partition for supported datasets")
 

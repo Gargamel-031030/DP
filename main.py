@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import copy
 from torch.utils.data import DataLoader
-from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_CIFAR10, get_noniid_fmnist
+from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_cifar100_datasets, get_CIFAR10, get_CIFAR100, get_noniid_fmnist
 from dlg import dlg_attack
 from model import *
 from client import Client
@@ -450,26 +450,44 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
     return update
 
 
-def test(client_model, client_testloader):
+def evaluate(client_model, client_testloader):
     client_model.eval()
     client_model = client_model.to(device)
 
     num_data = 0
 
     correct = 0
+    total_loss = 0.0
     with torch.no_grad():
         for data, labels in client_testloader:
             data, labels = data.to(device), labels.to(device)
             outputs = client_model(data)
+            total_loss += F.cross_entropy(outputs, labels, reduction='sum').item()
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == labels).sum().item()
             num_data += labels.size(0)
 
     accuracy = 100.0 * correct / num_data
+    loss = total_loss / num_data
 
     client_model.to('cpu')
 
+    return accuracy, loss
+
+
+def test(client_model, client_testloader):
+    accuracy, _ = evaluate(client_model, client_testloader)
     return accuracy
+
+
+def get_method_name():
+    if fedavg:
+        return "FedAvg"
+    if weiavg:
+        return "WeiAvg"
+    if deavg:
+        return "AdapL"
+    return "Unknown"
 
 
 def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
@@ -514,6 +532,7 @@ def main():
         mean_acc_s = []
         acc_matrix = []
         global_acc = []
+        global_loss = []
 
         ## get data and model
         if dataset == 'mnist':
@@ -564,6 +583,19 @@ def main():
             global_model = cifarNet()
             # clients_models = [LeNet() for _ in range(num_clients)]
             # global_model = LeNet()
+        elif dataset == 'cifar100':
+            if args.iid:
+                train_dataset, test_dataset = get_cifar100_datasets()
+                clients_train_sets = get_clients_datasets(train_dataset, num_clients)
+                client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
+                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
+                                             clients_train_sets]
+                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+            else:
+                clients_train_loaders, clients_test_loaders, client_data_sizes = get_CIFAR100(args.dir_alpha, num_clients)
+
+            clients_models = [cifar100ResNet18() for _ in range(num_clients)]
+            global_model = cifar100ResNet18()
         else:
             raise ValueError('undifined dataset')
 
@@ -675,16 +707,27 @@ def main():
                         global_param.add_(update)
                 en_time = time.time()
                 print(f"cost time:{en_time-st_time}")
-                global_accuracy = test(global_model, clients_test_loaders[0])
+                global_accuracy, global_test_loss = evaluate(global_model, clients_test_loaders[0])
                 if (epoch >= 2) and (global_accuracy >= global_acc[-1]) and (global_acc[-1] >= global_acc[-2]) and all(global_accuracy > x for x in global_acc):
                     latest_global_model = copy.deepcopy(global_model)
                     for client in sampled_clients:
                         client.ba.noise_multiplier *= decay_factor
                 print('epoch:{}, global accuracy:{}'.format(epoch+1, global_accuracy))
                 global_acc.append(global_accuracy)
+                global_loss.append(global_test_loss)
 
-        acc = pd.DataFrame(global_acc)
-        csv_dir = BASE_DIR / dataset
+        acc = pd.DataFrame({
+            'round': list(range(1, len(global_acc) + 1)),
+            'test_loss': global_loss,
+            'test_accuracy': global_acc,
+            'dataset': dataset,
+            'method': get_method_name(),
+            'client_num': num_clients,
+            'privacy_setting': target_epsilon,
+            'iid': args.iid,
+            'dir_alpha': args.dir_alpha,
+        })
+        csv_dir = BASE_DIR / 'results' / dataset
         os.makedirs(csv_dir, exist_ok=True)
         file_name = (
                 f'{csv_dir}/'
@@ -692,7 +735,7 @@ def main():
                 f'{dataset}_'
                 f'numclients_{num_clients}_without2.csv'
             )
-        acc.to_csv(file_name, index=False, header=None)
+        acc.to_csv(file_name, index=False)
         char_set = '1234567890abcdefghijklmnopqrstuvwxyz'
         ID = ''
         for ch in random.sample(char_set, 5):

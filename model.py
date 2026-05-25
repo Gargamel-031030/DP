@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.models import resnet18
 
 
 def weights_init(m):
@@ -59,7 +60,7 @@ class fmnistNet(nn.Module):
 
 
 class cifarNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=10):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, 3, 1, padding=1)
         self.conv2 = nn.Conv2d(32, 64, 3, 1, padding=1)
@@ -67,7 +68,7 @@ class cifarNet(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.dropout = nn.Dropout(0.25)
         self.fc1 = nn.Linear(128 * 4 * 4, 1024)
-        self.fc2 = nn.Linear(1024, 10)
+        self.fc2 = nn.Linear(1024, num_classes)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -88,6 +89,14 @@ class cifarNet(nn.Module):
 
     def name(self):
         return "cifarNet"
+
+
+def cifar100ResNet18():
+    model = resnet18(weights=None)
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    model.maxpool = nn.Identity()
+    model.fc = nn.Linear(model.fc.in_features, 100)
+    return model
 
 
 '''
