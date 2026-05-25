@@ -74,8 +74,11 @@ def compute_fisher_diag(model, dataloader):
     for fisher_value in fisher_diag:
         x_min = torch.min(fisher_value)
         x_max = torch.max(fisher_value)
-        normalized_fisher_value = (fisher_value - x_min) / (x_max - x_min)
+        denom = x_max - x_min
+        if denom.item() <= 0 or not torch.isfinite(denom).item():
+            normalized_fisher_value = torch.zeros_like(fisher_value)
+        else:
+            normalized_fisher_value = (fisher_value - x_min) / denom
         normalized_fisher_diag.append(normalized_fisher_value)
 
     return normalized_fisher_diag
-

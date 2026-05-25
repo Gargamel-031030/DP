@@ -131,6 +131,25 @@ def customloss(outputs, labels, type, param_diffs=None, sigma=None):
 
     return ce_loss + reg_loss
 
+
+def get_important_fisher_mean(fisher_value, important_mask):
+    selected = fisher_value[important_mask]
+    if selected.numel() == 0:
+        return torch.tensor(0.0, device=fisher_value.device)
+    mean_value = selected.mean()
+    if not torch.isfinite(mean_value):
+        return torch.tensor(0.0, device=fisher_value.device)
+    return mean_value
+
+
+def get_layer_noise_multiplier(base_sigma, mean_value, min_mean):
+    if not torch.isfinite(mean_value) or not torch.isfinite(min_mean) or min_mean.item() <= 0:
+        return base_sigma
+    scale = 1 + ((mean_value - min_mean) / (min_mean * 10)).item()
+    if not np.isfinite(scale) or scale < 0:
+        return base_sigma
+    return base_sigma * scale
+
 def local_update_fedavg(model, dataloader, global_model, client):
     model = model.to(device)
     global_model = global_model.to(device)
@@ -214,9 +233,9 @@ def local_update_first(model, dataloader, global_model, client):
 
     means = []
     for u_param, fisher_value in zip(u_loc, fisher_diag):
-        meanl = torch.sum(fisher_value * (u_param != 0)) / torch.nonzero(fisher_value * (u_param != 0)).size(0)
+        meanl = get_important_fisher_mean(fisher_value, u_param != 0)
         means.append(meanl)
-    min_mean = min(means)
+    min_mean = torch.min(torch.stack(means))
 
     for epoch in range(args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
@@ -262,7 +281,7 @@ def local_update_first(model, dataloader, global_model, client):
         #     noisy_gradients.append(new_grad)
         ##  myalgo 论文
         for grad, fisher_value, meanl in zip(batch_gradient, fisher_diag, means):
-            sigma = client.ba.noise_multiplier * (1 + (meanl-min_mean)/(min_mean * 10))
+            sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
             noise = torch.normal(mean=0.0, std=clipping_bound * sigma, size=grad.shape)
             noise = noise / datas.size(0)
             noise = noise.to(device)
@@ -361,9 +380,9 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
 
     means = []
     for u_param, fisher_value in zip(u_loc, fisher_diag):
-        meanl = torch.sum(fisher_value * (u_param != 0)) / torch.nonzero(fisher_value * (u_param != 0)).size(0)
+        meanl = get_important_fisher_mean(fisher_value, u_param != 0)
         means.append(meanl)
-    min_mean = min(means)
+    min_mean = torch.min(torch.stack(means))
 
     loss_sigma = None
     for epoch in range(args.local_epoch):
@@ -427,9 +446,9 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
         batch_gradient = [(grad / datas.size(0)) for grad in batch_gradient]
         noisy_gradients = []
         for grad, fisher_value, meanl, norm in zip(batch_gradient, fisher_diag, means, norms):
-            sigma = client.ba.noise_multiplier * (1 + (meanl-min_mean)/(min_mean * 10))
+            sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
             std = (norm * sigma).item()
-            if np.isnan(std):
+            if np.isnan(std) or std < 0:
                 std = 0.5
             noise = torch.normal(mean=0.0, std=std, size=grad.shape)
             noise = noise / datas.size(0)
