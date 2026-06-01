@@ -509,6 +509,63 @@ def get_method_name():
     return "Unknown"
 
 
+def format_arg_value(value):
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def get_model_name():
+    model_names = {
+        "mnist": "mnistnet",
+        "fmnist": "fmnistnet",
+        "cifar10": "cifarnet",
+        "cifar100": "resnet18",
+    }
+    return model_names[dataset]
+
+
+def get_partition_name():
+    if args.iid:
+        return "iid"
+    return f"noniid_alpha{format_arg_value(args.dir_alpha)}"
+
+
+def resolve_output_path(path_value):
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+def build_result_csv_path():
+    if args.output_csv:
+        csv_path = resolve_output_path(args.output_csv)
+        os.makedirs(csv_path.parent, exist_ok=True)
+        return csv_path
+
+    if args.output_dir:
+        csv_dir = resolve_output_path(args.output_dir)
+        file_name = (
+            f"pf_{get_method_name().lower()}_"
+            f"{dataset}_"
+            f"{get_model_name()}_"
+            f"{get_partition_name()}_"
+            f"k{num_clients}_"
+            f"sr{format_arg_value(user_sample_rate)}_"
+            f"steps{local_epoch}_"
+            f"b{batch_size}_"
+            f"lr{format_arg_value(args.lr)}_"
+            f"r{global_epoch}.csv"
+        )
+    else:
+        csv_dir = BASE_DIR / "results" / dataset
+        file_name = f"scen3_AdapL_{dataset}_numclients_{num_clients}_without2.csv"
+
+    os.makedirs(csv_dir, exist_ok=True)
+    return csv_dir / file_name
+
+
 def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
     if fedavg:
         sampled_client_weights = [sampled_client_data_size / sum(sampled_client_data_sizes)
@@ -746,15 +803,9 @@ def main():
             'iid': args.iid,
             'dir_alpha': args.dir_alpha,
         })
-        csv_dir = BASE_DIR / 'results' / dataset
-        os.makedirs(csv_dir, exist_ok=True)
-        file_name = (
-                f'{csv_dir}/'
-                f'scen3_AdapL_'
-                f'{dataset}_'
-                f'numclients_{num_clients}_without2.csv'
-            )
+        file_name = build_result_csv_path()
         acc.to_csv(file_name, index=False)
+        print(f"Saved CSV result to: {file_name}")
         char_set = '1234567890abcdefghijklmnopqrstuvwxyz'
         ID = ''
         for ch in random.sample(char_set, 5):

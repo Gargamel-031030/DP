@@ -29,6 +29,8 @@ def parse_args():
 
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['mnist', 'fmnist', 'cifar10', 'cifar100'])
     parser.add_argument('--data_dir', type=str, default=None, help="Root directory for datasets")
+    parser.add_argument('--output_dir', type=str, default=None, help="Directory for generated CSV results")
+    parser.add_argument('--output_csv', type=str, default=None, help="Exact CSV output path; overrides output_dir")
     parser.add_argument('--iid', action='store_true', default=True, help="Use IID partition for supported datasets")
     parser.add_argument('--no-iid', dest='iid', action='store_false', help="Use non-IID partition for supported datasets")
 
