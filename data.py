@@ -9,7 +9,10 @@ import numpy as np
 
 args = parse_args()
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(args.data_dir).expanduser() if args.data_dir else BASE_DIR / "data"
+if not DATA_DIR.is_absolute():
+    DATA_DIR = BASE_DIR / DATA_DIR
+DATA_DIR = DATA_DIR.resolve()
 
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
