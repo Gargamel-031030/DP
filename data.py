@@ -167,6 +167,12 @@ def get_cifar_transforms(mean, std):
     return train_transform, test_transform
 
 
+def get_cifar_root(default_subdir, base_folder, archive_name):
+    if (DATA_DIR / base_folder).exists() or (DATA_DIR / archive_name).exists():
+        return str(DATA_DIR)
+    return str(DATA_DIR / default_subdir)
+
+
 def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
     train_transform, test_transform = get_cifar_transforms(mean, std)
 
@@ -212,7 +218,7 @@ def get_cifar10_datasets():
         (0.2023, 0.1994, 0.2010),
     )
 
-    cifar10_root = str(DATA_DIR / "CIFAR10")
+    cifar10_root = get_cifar_root("CIFAR10", "cifar-10-batches-py", "cifar-10-python.tar.gz")
     train_dataset = datasets.CIFAR10(root=cifar10_root, train=True, download=True, transform=train_transform)
     test_dataset = datasets.CIFAR10(root=cifar10_root, train=False, download=True, transform=test_transform)
 
@@ -221,7 +227,7 @@ def get_cifar10_datasets():
 def get_CIFAR10(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
     return get_cifar_loaders(
         datasets.CIFAR10,
-        str(DATA_DIR / "CIFAR10"),
+        get_cifar_root("CIFAR10", "cifar-10-batches-py", "cifar-10-python.tar.gz"),
         (0.4914, 0.4822, 0.4465),
         (0.2023, 0.1994, 0.2010),
         alpha,
@@ -236,7 +242,7 @@ def get_cifar100_datasets():
         (0.2675, 0.2565, 0.2761),
     )
 
-    cifar100_root = str(DATA_DIR / "CIFAR100")
+    cifar100_root = get_cifar_root("CIFAR100", "cifar-100-python", "cifar-100-python.tar.gz")
     train_dataset = datasets.CIFAR100(root=cifar100_root, train=True, download=True, transform=train_transform)
     test_dataset = datasets.CIFAR100(root=cifar100_root, train=False, download=True, transform=test_transform)
 
@@ -246,7 +252,7 @@ def get_cifar100_datasets():
 def get_CIFAR100(alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:
     return get_cifar_loaders(
         datasets.CIFAR100,
-        str(DATA_DIR / "CIFAR100"),
+        get_cifar_root("CIFAR100", "cifar-100-python", "cifar-100-python.tar.gz"),
         (0.5071, 0.4867, 0.4408),
         (0.2675, 0.2565, 0.2761),
         alpha,
