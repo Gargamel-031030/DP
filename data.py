@@ -1,7 +1,7 @@
-import torch.random
+import torch
 from pathlib import Path
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset, Dataset, SubsetRandomSampler
+from torch.utils.data import DataLoader, Subset, Dataset
 from typing import Tuple, List
 from options import parse_args
 import numpy as np
@@ -14,48 +14,38 @@ if not DATA_DIR.is_absolute():
 DATA_DIR = DATA_DIR.resolve()
 print(f"Using dataset directory: {DATA_DIR}", flush=True)
 
-torch.manual_seed(0)
-torch.cuda.manual_seed(0)
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
 
 
 def hetero_dir_partition(targets, num_clients, num_classes, dir_alpha, min_require_size=1):
     targets = np.asarray(targets)
-    num_samples = len(targets)
+    rng = np.random.default_rng(args.seed)
+    client_indices = [[] for _ in range(num_clients)]
 
-    for _ in range(100):
-        client_indices = [[] for _ in range(num_clients)]
+    for class_id in sorted(np.unique(targets).tolist()):
+        class_indices = np.where(targets == class_id)[0]
+        rng.shuffle(class_indices)
 
-        for class_id in range(num_classes):
-            class_indices = np.where(targets == class_id)[0]
-            np.random.shuffle(class_indices)
+        proportions = rng.dirichlet(np.full(num_clients, dir_alpha, dtype=np.float64))
+        split_points = (np.cumsum(proportions)[:-1] * len(class_indices)).astype(int)
+        class_partitions = np.split(class_indices, split_points)
 
-            proportions = np.random.dirichlet(np.repeat(dir_alpha, num_clients))
-            client_mean_size = num_samples / num_clients
-            proportions = np.array(
-                [
-                    proportion if len(indices) < client_mean_size else 0.0
-                    for proportion, indices in zip(proportions, client_indices)
-                ]
-            )
-            if proportions.sum() == 0:
-                proportions = np.random.dirichlet(np.repeat(dir_alpha, num_clients))
-            else:
-                proportions = proportions / proportions.sum()
+        for client_id, partition in enumerate(class_partitions):
+            client_indices[client_id].extend(int(index) for index in partition.tolist())
 
-            split_points = (np.cumsum(proportions) * len(class_indices)).astype(int)[:-1]
-            class_partitions = np.split(class_indices, split_points)
-            client_indices = [
-                indices + partition.tolist()
-                for indices, partition in zip(client_indices, class_partitions)
-            ]
+    for client_id in range(num_clients):
+        while len(client_indices[client_id]) < min_require_size:
+            donor_id = max(range(num_clients), key=lambda idx: len(client_indices[idx]))
+            if len(client_indices[donor_id]) <= min_require_size:
+                raise RuntimeError("Unable to rebalance Dirichlet partition")
+            donor_position = int(rng.integers(len(client_indices[donor_id])))
+            client_indices[client_id].append(client_indices[donor_id].pop(donor_position))
 
-        min_client_size = min(len(indices) for indices in client_indices)
-        if min_client_size >= min_require_size:
-            for indices in client_indices:
-                np.random.shuffle(indices)
-            return client_indices
+    for indices in client_indices:
+        rng.shuffle(indices)
 
-    raise ValueError("Dirichlet partition failed: at least one client has no samples")
+    return client_indices
 
 
 def get_client_example_nums(num_examples_per_client, num_clients, num_examples):
@@ -129,12 +119,25 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
     client_data_sizes = []
 
     # Create a shared test_loader for all clients
-    shared_test_loader = DataLoader(test_dataset, batch_size=256, shuffle=True)
+    shared_test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
     for i in range(num_clients):
-        train_sampler = torch.utils.data.SubsetRandomSampler(train_partition[i])
-
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, drop_last=True)
+        client_dataset = Subset(train_dataset, train_partition[i])
+        generator = torch.Generator().manual_seed(args.seed + i)
+        train_loader = DataLoader(
+            client_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            generator=generator,
+        )
 
         train_loaders.append(train_loader)
         test_loaders.append(shared_test_loader)
@@ -155,8 +158,8 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
 #CIFAR10-------------------------------------------------------------------------------------------------------
 def get_cifar_transforms(mean, std):
     train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ])
@@ -192,12 +195,25 @@ def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: i
     client_data_sizes = []
 
     # Create a shared test_loader for all clients
-    shared_test_loader = DataLoader(test_dataset, batch_size=256, shuffle=True)
+    shared_test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
 
     for i in range(num_clients):
-        train_sampler = torch.utils.data.SubsetRandomSampler(train_partition[i])
-
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=train_sampler, drop_last=True)
+        client_dataset = Subset(train_dataset, train_partition[i])
+        generator = torch.Generator().manual_seed(args.seed + i)
+        train_loader = DataLoader(
+            client_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+            generator=generator,
+        )
 
         train_loaders.append(train_loader)
         test_loaders.append(shared_test_loader)

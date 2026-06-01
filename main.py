@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import copy
-from torch.utils.data import DataLoader, default_collate
+import math
+from torch.utils.data import DataLoader
 from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_cifar100_datasets, get_CIFAR10, get_CIFAR100, get_noniid_fmnist
 from model import *
 from client import Client
@@ -18,10 +19,13 @@ from options import parse_args
 import torch.optim as optim
 import pandas as pd
 
-random.seed(10)
 BASE_DIR = Path(__file__).resolve().parent
 
 args = parse_args()
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.cuda.manual_seed_all(args.seed)
 
 num_clients = args.num_clients
 local_epoch = args.local_epoch
@@ -144,7 +148,7 @@ def get_important_fisher_mean(fisher_value, important_mask):
 def get_layer_noise_multiplier(base_sigma, mean_value, min_mean):
     if not torch.isfinite(mean_value) or not torch.isfinite(min_mean) or min_mean.item() <= 0:
         return base_sigma
-    scale = 1 + ((mean_value - min_mean) / (min_mean * 10)).item()
+    scale = 1 + ((mean_value - min_mean) / (min_mean * args.gamma)).item()
     if not np.isfinite(scale) or scale < 0:
         return base_sigma
     return base_sigma * scale
@@ -161,10 +165,69 @@ def get_fisher_batch_limit(dataloader):
     return len(dataloader)
 
 
-def sample_random_batch(dataloader):
-    batch_indices = random.choice(list(dataloader.batch_sampler))
-    samples = [dataloader.dataset[index] for index in batch_indices]
-    return default_collate(samples)
+def iter_local_batches(dataloader, local_steps):
+    train_iter = iter(dataloader)
+    for _ in range(local_steps):
+        try:
+            yield next(train_iter)
+        except StopIteration:
+            train_iter = iter(dataloader)
+            yield next(train_iter)
+
+
+def init_momentum_buffers(model):
+    if args.momentum <= 0:
+        return None
+    return [torch.zeros_like(param, device=param.device) for param in model.parameters()]
+
+
+def apply_local_gradients(model, gradients, momentum_buffers=None):
+    with torch.no_grad():
+        for idx, (param, grad) in enumerate(zip(model.parameters(), gradients)):
+            update = grad.detach()
+            if args.weight_decay != 0:
+                update = update + args.weight_decay * param.data
+            if momentum_buffers is not None:
+                momentum_buffers[idx].mul_(args.momentum).add_(update)
+                update = momentum_buffers[idx]
+            param.data = param.data - args.lr * update
+
+
+def get_selected_client_count():
+    if not 0 < user_sample_rate <= 1:
+        raise ValueError("--user_sample_rate/--client_fraction must be in (0, 1].")
+    return max(1, int(math.ceil(num_clients * user_sample_rate)))
+
+
+def select_clients(candidates, round_idx):
+    candidate_set = set(candidates)
+    generator = torch.Generator().manual_seed(args.seed + round_idx)
+    permutation = torch.randperm(num_clients, generator=generator).tolist()
+    selected = [cid for cid in permutation if cid in candidate_set][:get_selected_client_count()]
+    return sorted(selected)
+
+
+def make_train_loader(client_dataset, client_id):
+    generator = torch.Generator().manual_seed(args.seed + client_id)
+    return DataLoader(
+        client_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        generator=generator,
+    )
+
+
+def make_shared_test_loaders(test_dataset):
+    shared_test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.test_batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return [shared_test_loader for _ in range(num_clients)]
 
 
 def local_update_fedavg(model, dataloader, global_model, client):
@@ -172,12 +235,11 @@ def local_update_fedavg(model, dataloader, global_model, client):
     global_model = global_model.to(device)
 
     w_glob = [param.clone().detach() for param in global_model.parameters()]
+    momentum_buffers = init_momentum_buffers(model)
 
-    for epoch in range(args.local_epoch):
+    model.train()
+    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
-        # 随机选取一个 batch
-        batch = sample_random_batch(dataloader)
-        datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
         for i in range(datas.size(0)):  # data.size(0)是batch的大小
@@ -210,8 +272,7 @@ def local_update_fedavg(model, dataloader, global_model, client):
             new_grad = grad + noise
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
-        for param, grad_part in zip(model.parameters(), noisy_gradients):
-            param.data = param.data - args.lr * grad_part
+        apply_local_gradients(model, noisy_gradients, momentum_buffers)
     client.ba.update(client.loc_steps)
 
     with torch.no_grad():
@@ -259,48 +320,47 @@ def local_update_first(model, dataloader, global_model, client):
         means.append(meanl)
     min_mean = torch.min(torch.stack(means))
 
-    for epoch in range(args.local_epoch):
-        # w_last_round = [param.clone().detach() for param in model.parameters()]
-        # 随机选取一个 batch
-        batch = sample_random_batch(dataloader)
-        datas, labels = batch
-        # 将batch中的每个数据单独处理
+    model.train()
+    momentum_buffers = init_momentum_buffers(model)
+    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
         batch_gradient = None
-        for i in range(datas.size(0)):  # data.size(0)是batch的大小
-            sample_data = datas[i].unsqueeze(0)  # 取出第i个样本，并保持维度一致
-            sample_data = sample_data.to(device)
-            sample_label = labels[i].unsqueeze(0)  # 取出对应的标签，并保持维度一致
-            sample_label = sample_label.to(device)
-            # optimizer1.zero_grad()  # 清空梯度
-            output = model(sample_data)  # 前向传播
+        for i in range(datas.size(0)):
+            sample_data = datas[i].unsqueeze(0).to(device)
+            sample_label = labels[i].unsqueeze(0).to(device)
+            output = model(sample_data)
+
             param_diffs = [u_new - u_old for u_new, u_old in zip(model.parameters(), w_glob)]
             for idx, (param, u_param) in enumerate(zip(param_diffs, u_loc)):
                 param_diffs[idx] = param * (u_param != 0)
-            loss = customloss(output, sample_label, "R1", param_diffs, clipping_bound * client.ba.noise_multiplier)
-            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
+
+            loss1 = customloss(output, sample_label, "R1", param_diffs, clipping_bound * client.ba.noise_multiplier)
+            gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, only_inputs=True)
+            gradient1 = list(gradient1)
+            for idx, (grad, u_param) in enumerate(zip(gradient1, u_loc)):
+                gradient1[idx] = grad * (u_param != 0)
+
+            loss2 = customloss(output, sample_label, "R2")
+            gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
+            gradient2 = list(gradient2)
+            for idx, (grad, v_param) in enumerate(zip(gradient2, v_loc)):
+                gradient2[idx] = grad * (v_param != 0)
+
+            gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
             norm = 0
             for grad in gradient:
                 current_norm = torch.norm(grad, p=2)
                 norm += torch.pow(current_norm, 2)
             clip_rate = get_clip_rate(norm, clipping_bound)
+            clipped_gradient = [(grad / clip_rate) for grad in gradient]
+
             if batch_gradient is None:
-                batch_gradient = [(grad / clip_rate) for grad in gradient]
+                batch_gradient = clipped_gradient
             else:
-                new_gradient = [(grad / clip_rate) for grad in gradient]
-                for idx, (grad1, grad2) in enumerate(zip(batch_gradient, new_gradient)):
+                for idx, (grad1, grad2) in enumerate(zip(batch_gradient, clipped_gradient)):
                     batch_gradient[idx] = grad1 + grad2
+
         batch_gradient = [(grad / datas.size(0)) for grad in batch_gradient]
-        for idx, (grad, u_param) in enumerate(zip(batch_gradient, u_loc)):
-            batch_gradient[idx] = grad * (u_param != 0)
         noisy_gradients = []
-        ## myalgo 1,2
-        # for grad, fisher_value in zip(batch_gradient, fisher_diag):
-        #     noise = torch.normal(mean=0.0, std=clipping_bound * client.ba.noise_multiplier, size=grad.shape)
-        #     noise = noise / datas.size(0)
-        #     noise = noise.to(device)
-        #     new_grad = grad + noise * (fisher_value > fisher_threshold)
-        #     noisy_gradients.append(new_grad)
-        ##  myalgo 论文
         for grad, fisher_value, meanl in zip(batch_gradient, fisher_diag, means):
             sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
             noise = torch.normal(mean=0.0, std=clipping_bound * sigma, size=grad.shape)
@@ -308,43 +368,7 @@ def local_update_first(model, dataloader, global_model, client):
             noise = noise.to(device)
             new_grad = grad + noise * (fisher_value > fisher_threshold)
             noisy_gradients.append(new_grad)
-        # Update model weights with gradients and learning rate
-        for param, grad_part in zip(model.parameters(), noisy_gradients):
-            param.data = param.data - args.lr * grad_part
-
-    # optimizer2 = optim.SGD(model.parameters(), lr=args.lr)
-    for epoch in range(args.local_epoch):
-        # 随机选取一个 batch
-        batch = sample_random_batch(dataloader)
-        datas, labels = batch
-        # 将batch中的每个数据单独处理
-        batch_gradient = None
-        for i in range(datas.size(0)):  # data.size(0)是batch的大小
-            sample_data = datas[i].unsqueeze(0)  # 取出第i个样本，并保持维度一致
-            sample_data = sample_data.to(device)
-            sample_label = labels[i].unsqueeze(0)  # 取出对应的标签，并保持维度一致
-            sample_label = sample_label.to(device)
-            # optimizer2.zero_grad()  # 清空梯度
-            output = model(sample_data)  # 前向传播
-            loss = customloss(output, sample_label, "R2")
-            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
-            norm = 0
-            for grad in gradient:
-                current_norm = torch.norm(grad, p=2)
-                norm += torch.pow(current_norm, 2)
-            clip_rate = get_clip_rate(norm, clipping_bound)
-            if batch_gradient is None:
-                batch_gradient = [(grad / clip_rate) for grad in gradient]
-            else:
-                new_gradient = [(grad / clip_rate) for grad in gradient]
-                for idx, (grad1, grad2) in enumerate(zip(batch_gradient, new_gradient)):
-                    batch_gradient[idx] = grad1 + grad2
-        batch_gradient = [(grad / datas.size(0)) for grad in batch_gradient]
-        for idx, (grad, v_param) in enumerate(zip(batch_gradient, v_loc)):
-            batch_gradient[idx] = grad * (v_param != 0)
-        # Update model weights with gradients and learning rate
-        for param, grad_part in zip(model.parameters(), batch_gradient):
-            param.data = param.data - args.lr * grad_part
+        apply_local_gradients(model, noisy_gradients, momentum_buffers)
 
     client.ba.update(client.loc_steps)
 
@@ -410,12 +434,11 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
         means.append(meanl)
     min_mean = torch.min(torch.stack(means))
 
+    model.train()
+    momentum_buffers = init_momentum_buffers(model)
     loss_sigma = None
-    for epoch in range(args.local_epoch):
+    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
-        # 随机选取一个 batch
-        batch = sample_random_batch(dataloader)
-        datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
         norms = []
@@ -449,11 +472,10 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
 
             for idx, (grad, lowest, highest) in enumerate(zip(gradient, lowests, highests)):
-                # current_grad = torch.max(grad, lowest)
-                # current_grad = torch.min(current_grad, highest)
-                current_grad = torch.min(grad, highest)
-                if torch.norm(current_grad, p=2) > 4.0:
-                    clip_rate = max(1.0, torch.norm(current_grad, p=2).item() / 4.0)
+                current_grad = torch.max(grad, lowest)
+                current_grad = torch.min(current_grad, highest)
+                if torch.norm(current_grad, p=2) > args.max_clip_norm:
+                    clip_rate = max(1.0, torch.norm(current_grad, p=2).item() / args.max_clip_norm)
                     current_grad = current_grad / clip_rate
                 gradient[idx] = current_grad
                 if (i == 0) and (torch.norm(current_grad, p=2) < 0.5):
@@ -481,8 +503,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             new_grad = grad + noise * (fisher_value > fisher_threshold)
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
-        for param, grad_part in zip(model.parameters(), noisy_gradients):
-            param.data = param.data - args.lr * grad_part
+        apply_local_gradients(model, noisy_gradients, momentum_buffers)
         loss_sigma = min(norms) * client.ba.noise_multiplier
     client.ba.update(client.loc_steps)
 
@@ -640,9 +661,11 @@ def main():
             train_dataset, test_dataset = get_mnist_datasets()
             clients_train_sets = get_clients_datasets(train_dataset, num_clients)
             client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
-            clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
-                                         clients_train_sets]
-            clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+            clients_train_loaders = [
+                make_train_loader(client_dataset, cid)
+                for cid, client_dataset in enumerate(clients_train_sets)
+            ]
+            clients_test_loaders = make_shared_test_loaders(test_dataset)
 
             clients_models = [mnistNet() for _ in range(num_clients)]
             global_model = mnistNet()
@@ -656,9 +679,11 @@ def main():
                 train_dataset, test_dataset = get_fmnist_datasets()
                 clients_train_sets = get_clients_datasets(train_dataset, num_clients)
                 client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
-                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
-                                             clients_train_sets]
-                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+                clients_train_loaders = [
+                    make_train_loader(client_dataset, cid)
+                    for cid, client_dataset in enumerate(clients_train_sets)
+                ]
+                clients_test_loaders = make_shared_test_loaders(test_dataset)
             else:
                 clients_train_loaders, clients_test_loaders, client_data_sizes = get_noniid_fmnist(args.dir_alpha, num_clients)
 
@@ -674,9 +699,11 @@ def main():
                 train_dataset, test_dataset = get_cifar10_datasets()
                 clients_train_sets = get_clients_datasets(train_dataset, num_clients)
                 client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
-                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
-                                             clients_train_sets]
-                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+                clients_train_loaders = [
+                    make_train_loader(client_dataset, cid)
+                    for cid, client_dataset in enumerate(clients_train_sets)
+                ]
+                clients_test_loaders = make_shared_test_loaders(test_dataset)
             else:
                 clients_train_loaders, clients_test_loaders, client_data_sizes = get_CIFAR10(args.dir_alpha, num_clients)
 
@@ -689,9 +716,11 @@ def main():
                 train_dataset, test_dataset = get_cifar100_datasets()
                 clients_train_sets = get_clients_datasets(train_dataset, num_clients)
                 client_data_sizes = [len(client_dataset) for client_dataset in clients_train_sets]
-                clients_train_loaders = [DataLoader(client_dataset, batch_size=batch_size) for client_dataset in
-                                             clients_train_sets]
-                clients_test_loaders = [DataLoader(test_dataset) for i in range(num_clients)]
+                clients_train_loaders = [
+                    make_train_loader(client_dataset, cid)
+                    for cid, client_dataset in enumerate(clients_train_sets)
+                ]
+                clients_test_loaders = make_shared_test_loaders(test_dataset)
             else:
                 clients_train_loaders, clients_test_loaders, client_data_sizes = get_CIFAR100(args.dir_alpha, num_clients)
 
@@ -742,11 +771,11 @@ def main():
         for epoch in trange(global_epoch):
             # precheck and pick up the candidates who can take the next commiunication round.
             candidates = [cid for cid in range(num_clients) if clients[cid].precheck()]
-            if len(candidates) < int(user_sample_rate * num_clients):
+            if len(candidates) < get_selected_client_count():
                 print('There are no enough clients can be trained!')
                 break
             else:
-                sampled_client_indices = random.sample(candidates, max(1, int(user_sample_rate * num_clients)))
+                sampled_client_indices = select_clients(candidates, epoch + 1)
                 print(
                     f"round {epoch + 1}/{global_epoch}: sampled clients {sampled_client_indices}",
                     flush=True,
@@ -787,13 +816,17 @@ def main():
                     #                                     global_model=global_model,
                     #                                     client=client)
                     clients_model_updates.append(client_update)
-                    accuracy = test(client_model, client_testloader)
-                    clients_accuracies.append(accuracy)
+                    if args.eval_client_models:
+                        accuracy = test(client_model, client_testloader)
+                        clients_accuracies.append(accuracy)
+                        accuracy_text = f" accuracy={accuracy:.4f}"
+                    else:
+                        accuracy_text = ""
                     print(
                         f"round {epoch + 1}/{global_epoch}: "
                         f"client {idx + 1}/{len(sampled_clients)} "
-                        f"cid={sampled_client_indices[idx]} "
-                        f"accuracy={accuracy:.4f} "
+                        f"cid={sampled_client_indices[idx]}"
+                        f"{accuracy_text} "
                         f"elapsed={time.time() - client_start_time:.2f}s",
                         flush=True,
                     )
@@ -808,13 +841,15 @@ def main():
                 #                                        client=clients[0])
                 # accuracy = test(clients_models[0], clients_test_loaders[0])
                 # clients_accuracies.append(accuracy)
-                print(clients_accuracies)
+                if args.eval_client_models:
+                    print(clients_accuracies)
                 # ##DLG
                 # if epoch == 19:
                 #     dlg_attack(sampled_clients_models[0], dataset, epoch, idx=1)
 
-                mean_acc_s.append(sum(clients_accuracies) / len(clients_accuracies))
-                acc_matrix.append(clients_accuracies)
+                if args.eval_client_models:
+                    mean_acc_s.append(sum(clients_accuracies) / len(clients_accuracies))
+                    acc_matrix.append(clients_accuracies)
                 sampled_client_data_sizes = [client_data_sizes[i] for i in sampled_client_indices]
                 sampled_client_eps = [priv_preferences[i] for i in sampled_client_indices]
 
@@ -831,7 +866,7 @@ def main():
                 global_accuracy, global_test_loss = evaluate(global_model, clients_test_loaders[0])
                 if (epoch >= 2) and (global_accuracy >= global_acc[-1]) and (global_acc[-1] >= global_acc[-2]) and all(global_accuracy > x for x in global_acc):
                     latest_global_model = copy.deepcopy(global_model)
-                    for client in sampled_clients:
+                    for client in clients:
                         client.ba.noise_multiplier *= decay_factor
                 print('epoch:{}, global accuracy:{}'.format(epoch+1, global_accuracy))
                 global_acc.append(global_accuracy)
@@ -847,6 +882,17 @@ def main():
             'privacy_setting': target_epsilon,
             'iid': args.iid,
             'dir_alpha': args.dir_alpha,
+            'client_fraction': user_sample_rate,
+            'local_steps': local_epoch,
+            'batch_size': batch_size,
+            'lr': args.lr,
+            'momentum': args.momentum,
+            'weight_decay': args.weight_decay,
+            'seed': args.seed,
+            'phi': alpha,
+            'fisher_threshold': args.fisher_threshold,
+            'gamma': args.gamma,
+            'max_clip_norm': args.max_clip_norm,
         })
         file_name = build_result_csv_path()
         acc.to_csv(file_name, index=False)
