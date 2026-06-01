@@ -9,7 +9,6 @@ import torch
 import copy
 from torch.utils.data import DataLoader
 from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_cifar100_datasets, get_CIFAR10, get_CIFAR100, get_noniid_fmnist
-from dlg import dlg_attack
 from model import *
 from client import Client
 from dpsgd_utils import *
