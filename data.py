@@ -2,7 +2,6 @@ import torch.random
 from pathlib import Path
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, Dataset, SubsetRandomSampler
-from fedlab.utils.dataset.functional import hetero_dir_partition
 from typing import Tuple, List
 from options import parse_args
 import numpy as np
@@ -16,6 +15,48 @@ DATA_DIR = DATA_DIR.resolve()
 
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
+
+
+def hetero_dir_partition(targets, num_clients, num_classes, dir_alpha, min_require_size=1):
+    targets = np.asarray(targets)
+    num_samples = len(targets)
+
+    for _ in range(100):
+        client_indices = [[] for _ in range(num_clients)]
+
+        for class_id in range(num_classes):
+            class_indices = np.where(targets == class_id)[0]
+            np.random.shuffle(class_indices)
+
+            proportions = np.random.dirichlet(np.repeat(dir_alpha, num_clients))
+            client_mean_size = num_samples / num_clients
+            proportions = np.array(
+                [
+                    proportion if len(indices) < client_mean_size else 0.0
+                    for proportion, indices in zip(proportions, client_indices)
+                ]
+            )
+            if proportions.sum() == 0:
+                proportions = np.random.dirichlet(np.repeat(dir_alpha, num_clients))
+            else:
+                proportions = proportions / proportions.sum()
+
+            split_points = (np.cumsum(proportions) * len(class_indices)).astype(int)[:-1]
+            class_partitions = np.split(class_indices, split_points)
+            client_indices = [
+                indices + partition.tolist()
+                for indices, partition in zip(client_indices, class_partitions)
+            ]
+
+        min_client_size = min(len(indices) for indices in client_indices)
+        if min_client_size >= min_require_size:
+            for indices in client_indices:
+                np.random.shuffle(indices)
+            return client_indices
+
+    raise ValueError("Dirichlet partition failed: at least one client has no samples")
+
+
 def get_client_example_nums(num_examples_per_client, num_clients, num_examples):
     # 设置随机数种子以便结果可复现
     np.random.seed(0)
