@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import copy
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 from data import get_mnist_datasets, get_clients_datasets, get_fmnist_datasets, get_cifar10_datasets, get_cifar100_datasets, get_CIFAR10, get_CIFAR100, get_noniid_fmnist
 from model import *
 from client import Client
@@ -149,6 +149,24 @@ def get_layer_noise_multiplier(base_sigma, mean_value, min_mean):
         return base_sigma
     return base_sigma * scale
 
+
+def get_clip_rate(norm, bound):
+    norm_value = math.sqrt(norm.detach().item())
+    return max(1.0, norm_value / bound)
+
+
+def get_fisher_batch_limit(dataloader):
+    if args.fisher_max_batches > 0:
+        return min(args.fisher_max_batches, len(dataloader))
+    return len(dataloader)
+
+
+def sample_random_batch(dataloader):
+    batch_indices = random.choice(list(dataloader.batch_sampler))
+    samples = [dataloader.dataset[index] for index in batch_indices]
+    return default_collate(samples)
+
+
 def local_update_fedavg(model, dataloader, global_model, client):
     model = model.to(device)
     global_model = global_model.to(device)
@@ -158,7 +176,7 @@ def local_update_fedavg(model, dataloader, global_model, client):
     for epoch in range(args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 随机选取一个 batch
-        batch = random.choice(list(dataloader))
+        batch = sample_random_batch(dataloader)
         datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
@@ -170,13 +188,12 @@ def local_update_fedavg(model, dataloader, global_model, client):
             # optimizer1.zero_grad()  # 清空梯度
             output = model(sample_data)  # 前向传播
             loss = F.cross_entropy(output, sample_label)
-            gradient = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True,
-                                           only_inputs=True)
+            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
             norm = 0
             for grad in gradient:
                 current_norm = torch.norm(grad, p=2)
                 norm += torch.pow(current_norm, 2)
-            clip_rate = max(1, (math.sqrt(norm) / clipping_bound))
+            clip_rate = get_clip_rate(norm, clipping_bound)
             if batch_gradient is None:
                 batch_gradient = [(grad / clip_rate) for grad in gradient]
             else:
@@ -215,7 +232,13 @@ def local_update_first(model, dataloader, global_model, client):
 
     w_glob = [param.clone().detach() for param in global_model.parameters()]
 
-    fisher_diag = compute_fisher_diag(model, dataloader)
+    print(
+        f"Computing Fisher: data_size={client.data_size}, "
+        f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+        flush=True,
+    )
+    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
+    print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
     u_loc, v_loc = [], []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
@@ -239,7 +262,7 @@ def local_update_first(model, dataloader, global_model, client):
     for epoch in range(args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 随机选取一个 batch
-        batch = random.choice(list(dataloader))
+        batch = sample_random_batch(dataloader)
         datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
@@ -254,13 +277,12 @@ def local_update_first(model, dataloader, global_model, client):
             for idx, (param, u_param) in enumerate(zip(param_diffs, u_loc)):
                 param_diffs[idx] = param * (u_param != 0)
             loss = customloss(output, sample_label, "R1", param_diffs, clipping_bound * client.ba.noise_multiplier)
-            gradient = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True,
-                                           only_inputs=True)
+            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
             norm = 0
             for grad in gradient:
                 current_norm = torch.norm(grad, p=2)
                 norm += torch.pow(current_norm, 2)
-            clip_rate = max(1, (math.sqrt(norm) / clipping_bound))
+            clip_rate = get_clip_rate(norm, clipping_bound)
             if batch_gradient is None:
                 batch_gradient = [(grad / clip_rate) for grad in gradient]
             else:
@@ -293,7 +315,7 @@ def local_update_first(model, dataloader, global_model, client):
     # optimizer2 = optim.SGD(model.parameters(), lr=args.lr)
     for epoch in range(args.local_epoch):
         # 随机选取一个 batch
-        batch = random.choice(list(dataloader))
+        batch = sample_random_batch(dataloader)
         datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
@@ -305,13 +327,12 @@ def local_update_first(model, dataloader, global_model, client):
             # optimizer2.zero_grad()  # 清空梯度
             output = model(sample_data)  # 前向传播
             loss = customloss(output, sample_label, "R2")
-            gradient = torch.autograd.grad(loss, model.parameters(), retain_graph=True, create_graph=True,
-                                           only_inputs=True)
+            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
             norm = 0
             for grad in gradient:
                 current_norm = torch.norm(grad, p=2)
                 norm += torch.pow(current_norm, 2)
-            clip_rate = max(1, (math.sqrt(norm) / clipping_bound))
+            clip_rate = get_clip_rate(norm, clipping_bound)
             if batch_gradient is None:
                 batch_gradient = [(grad / clip_rate) for grad in gradient]
             else:
@@ -368,7 +389,13 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
         lowests.append(lowest)
         highests.append(highest)
 
-    fisher_diag = compute_fisher_diag(model, dataloader)
+    print(
+        f"Computing Fisher: data_size={client.data_size}, "
+        f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+        flush=True,
+    )
+    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
+    print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
     u_loc, v_loc = [], []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
@@ -387,7 +414,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
     for epoch in range(args.local_epoch):
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 随机选取一个 batch
-        batch = random.choice(list(dataloader))
+        batch = sample_random_batch(dataloader)
         datas, labels = batch
         # 将batch中的每个数据单独处理
         batch_gradient = None
@@ -408,15 +435,14 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             else:
                 sigma = loss_sigma
             loss1 = customloss(output, sample_label, "R1", param_diffs, sigma)
-            gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, create_graph=True,
+            gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, create_graph=False,
                                             only_inputs=True)
             gradient1 = list(gradient1)
             for idx, (grad, u_param) in enumerate(zip(gradient1, u_loc)):
                 gradient1[idx] = grad * (u_param != 0)
 
             loss2 = customloss(output, sample_label, "R2")
-            gradient2 = torch.autograd.grad(loss2, model.parameters(), retain_graph=True, create_graph=True,
-                                            only_inputs=True)
+            gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
             gradient2 = list(gradient2)
             for idx, (grad, v_param) in enumerate(zip(gradient2, v_loc)):
                 gradient2[idx] = grad * (v_param != 0)
@@ -721,6 +747,10 @@ def main():
                 break
             else:
                 sampled_client_indices = random.sample(candidates, max(1, int(user_sample_rate * num_clients)))
+                print(
+                    f"round {epoch + 1}/{global_epoch}: sampled clients {sampled_client_indices}",
+                    flush=True,
+                )
                 sampled_clients_models = [clients_models[i] for i in sampled_client_indices]
                 sampled_clients_train_loaders = [clients_train_loaders[i] for i in sampled_client_indices]
                 sampled_clients_test_loaders = [clients_test_loaders[i] for i in sampled_client_indices]
@@ -736,6 +766,14 @@ def main():
                 st_time = time.time()
                 for idx, (client, client_model, client_trainloader, client_testloader) in enumerate(
                             zip(sampled_clients, sampled_clients_models, sampled_clients_train_loaders, sampled_clients_test_loaders)):
+                    client_start_time = time.time()
+                    print(
+                        f"round {epoch + 1}/{global_epoch}: "
+                        f"client {idx + 1}/{len(sampled_clients)} "
+                        f"cid={sampled_client_indices[idx]} "
+                        f"data_size={client.data_size} start",
+                        flush=True,
+                    )
                     if latest_global_model is None:
                         client_update = local_update_first(model=client_model, dataloader=client_trainloader,
                                                                global_model=global_model,
@@ -751,6 +789,14 @@ def main():
                     clients_model_updates.append(client_update)
                     accuracy = test(client_model, client_testloader)
                     clients_accuracies.append(accuracy)
+                    print(
+                        f"round {epoch + 1}/{global_epoch}: "
+                        f"client {idx + 1}/{len(sampled_clients)} "
+                        f"cid={sampled_client_indices[idx]} "
+                        f"accuracy={accuracy:.4f} "
+                        f"elapsed={time.time() - client_start_time:.2f}s",
+                        flush=True,
+                    )
                 # if latest_global_model is None:
                 #     client_update = local_update_first(model=clients_models[0], dataloader=clients_train_loaders[0],
                 #                                        global_model=global_model,

@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument('--decay_factor', type=float, default=0.99, help="noise_multiplier decay factor")
 
     parser.add_argument('--fisher_threshold', type=float, default=0.4, help="Fisher information threshold for parameter selection")
+    parser.add_argument('--fisher_max_batches', type=int, default=0, help="Maximum batches used to estimate Fisher information; 0 means all batches")
     parser.add_argument('--lambda_1', type=float, default=0.1, help="Lambda value for EWC regularization term")
     parser.add_argument('--lambda_2', type=float, default=0.05, help="Lambda value for regularization term to control the update magnitude")
 

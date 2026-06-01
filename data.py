@@ -12,6 +12,7 @@ DATA_DIR = Path(args.data_dir).expanduser() if args.data_dir else BASE_DIR / "da
 if not DATA_DIR.is_absolute():
     DATA_DIR = BASE_DIR / DATA_DIR
 DATA_DIR = DATA_DIR.resolve()
+print(f"Using dataset directory: {DATA_DIR}", flush=True)
 
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
@@ -169,8 +170,11 @@ def get_cifar_transforms(mean, std):
 
 def get_cifar_root(default_subdir, base_folder, archive_name):
     if (DATA_DIR / base_folder).exists() or (DATA_DIR / archive_name).exists():
-        return str(DATA_DIR)
-    return str(DATA_DIR / default_subdir)
+        root = DATA_DIR
+    else:
+        root = DATA_DIR / default_subdir
+    print(f"Using CIFAR root for {base_folder}: {root}", flush=True)
+    return str(root)
 
 
 def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: int) -> Tuple[List[DataLoader], List[DataLoader], List[int]]:

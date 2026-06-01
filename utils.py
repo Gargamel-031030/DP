@@ -35,15 +35,19 @@ def compute_noise_multiplier_decay(target_epsilon, target_delta, global_epoch, l
     return last_sigma
 
 
-def compute_fisher_diag(model, dataloader):
+def compute_fisher_diag(model, dataloader, max_batches=0):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model.eval()
     fisher_diag = [torch.zeros_like(param) for param in model.parameters()]
 
-    for data, labels in dataloader:
+    num_samples = 0
+    for batch_idx, (data, labels) in enumerate(dataloader):
+        if max_batches > 0 and batch_idx >= max_batches:
+            break
         data, labels = data.to(device), labels.to(device)
+        num_samples += labels.size(0)
 
         # Calculate output log probabilities
         log_probs = torch.nn.functional.log_softmax(model(data), dim=1)
@@ -53,7 +57,8 @@ def compute_fisher_diag(model, dataloader):
 
             # Calculate first-order derivatives (gradients)
             model.zero_grad()
-            grad1 = autograd.grad(log_prob, model.parameters(), create_graph=True, retain_graph=True)
+            retain_graph = i < labels.size(0) - 1
+            grad1 = autograd.grad(log_prob, model.parameters(), create_graph=False, retain_graph=retain_graph)
 
             # Update Fisher diagonal elements
             for fisher_diag_value, grad_value in zip(fisher_diag, grad1):
@@ -65,8 +70,10 @@ def compute_fisher_diag(model, dataloader):
         # Release CUDA memory
         # torch.cuda.empty_cache()
 
+    if num_samples == 0:
+        raise ValueError("Cannot compute Fisher information from an empty dataloader")
+
     # Calculate the mean value
-    num_samples = len(dataloader.dataset)
     fisher_diag = [fisher_diag_value / num_samples for fisher_diag_value in fisher_diag]
 
     # Normalize Fisher values layer-wise
