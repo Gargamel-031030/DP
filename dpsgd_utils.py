@@ -12,6 +12,8 @@ SCENARIO_RATIOS = {
     'scenario2': ([0.5, 1.0, 2.0, 4.0, 8.0], [0.2, 0.2, 0.4, 0.1, 0.1]),
     # Paper Scenario 3: 90% L1, 10% L5.
     'scenario3': ([0.5, 1.0, 2.0, 4.0, 8.0], [0.9, 0.0, 0.0, 0.0, 0.1]),
+    # Loose diagnostic setting: all clients use the paper's largest epsilon.
+    'loose8': ([8.0], [1.0]),
 }
 
 

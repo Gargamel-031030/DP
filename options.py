@@ -21,8 +21,8 @@ def parse_args():
         '--privacy_scenario',
         type=str,
         default='scenario3',
-        choices=['scenario1', 'scenario2', 'scenario3', 'file'],
-        help="Privacy budget distribution; scenario1 is the loosest paper scenario, scenario3 is the strictest",
+        choices=['scenario1', 'scenario2', 'scenario3', 'loose8', 'file'],
+        help="Privacy budget distribution; loose8 is a diagnostic all-epsilon-8 setting",
     )
     parser.add_argument('--target_delta', type=float, default=1e-5, help="Target privacy budget delta")
     parser.add_argument('--clipping_bound', type=float, default=1.0, help="Gradient clipping bound")
