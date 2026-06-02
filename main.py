@@ -293,13 +293,15 @@ def local_update_first(model, dataloader, global_model, client):
 
     w_glob = [param.clone().detach() for param in global_model.parameters()]
 
-    print(
-        f"Computing Fisher: data_size={client.data_size}, "
-        f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
-        flush=True,
-    )
+    if args.verbose_logs:
+        print(
+            f"Computing Fisher: data_size={client.data_size}, "
+            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+            flush=True,
+        )
     fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
-    print(f"Finished Fisher: data_size={client.data_size}", flush=True)
+    if args.verbose_logs:
+        print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
     u_loc, v_loc = [], []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
@@ -413,13 +415,15 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
         lowests.append(lowest)
         highests.append(highest)
 
-    print(
-        f"Computing Fisher: data_size={client.data_size}, "
-        f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
-        flush=True,
-    )
+    if args.verbose_logs:
+        print(
+            f"Computing Fisher: data_size={client.data_size}, "
+            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+            flush=True,
+        )
     fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
-    print(f"Finished Fisher: data_size={client.data_size}", flush=True)
+    if args.verbose_logs:
+        print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
     u_loc, v_loc = [], []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
@@ -736,6 +740,7 @@ def main():
         priv_preferences = set_epsilons(target_epsilon, num_clients, args.privacy_scenario)
         priv_preferences = np.array(priv_preferences)
         clients = []
+        noise_multipliers = []
         for cid in range(num_clients):
             client = Client(train_data=clients_train_loaders[cid],
                                 test_data=clients_test_loaders[cid],
@@ -755,11 +760,21 @@ def main():
             else:
                 nm = compute_noise_multiplier(N=client_data_sizes[cid], L=batch_size, epsilon=client_eps, delta=target_delta,
                                                   T=global_epoch*local_epoch*user_sample_rate)
-            print(f"initial nm:{nm}")
+            noise_multipliers.append(nm)
+            if args.verbose_logs:
+                print(f"initial nm:{nm}")
             ba = MomentsAccountant(epsilon=client_eps, delta=target_delta, noise_multiplier=nm)
             client.set_ba(ba)
 
             clients.append(client)
+        if not args.verbose_logs:
+            print(
+                "initial nm summary: "
+                f"min={np.min(noise_multipliers):.4f}, "
+                f"max={np.max(noise_multipliers):.4f}, "
+                f"mean={np.mean(noise_multipliers):.4f}",
+                flush=True,
+            )
 
         latest_global_model = None
 
@@ -769,7 +784,8 @@ def main():
         #     start_idx.append(start_idx[-1] + client_data_sizes[i - 1])
         # print(f"start_idx: {start_idx}")
 
-        for epoch in trange(global_epoch):
+        round_iter = trange(global_epoch) if args.verbose_logs else range(global_epoch)
+        for epoch in round_iter:
             # precheck and pick up the candidates who can take the next commiunication round.
             candidates = [cid for cid in range(num_clients) if clients[cid].precheck()]
             if len(candidates) < get_selected_client_count():
@@ -777,10 +793,11 @@ def main():
                 break
             else:
                 sampled_client_indices = select_clients(candidates, epoch + 1)
-                print(
-                    f"round {epoch + 1}/{global_epoch}: sampled clients {sampled_client_indices}",
-                    flush=True,
-                )
+                if args.verbose_logs:
+                    print(
+                        f"round {epoch + 1}/{global_epoch}: sampled clients {sampled_client_indices}",
+                        flush=True,
+                    )
                 sampled_clients_models = [clients_models[i] for i in sampled_client_indices]
                 sampled_clients_train_loaders = [clients_train_loaders[i] for i in sampled_client_indices]
                 sampled_clients_test_loaders = [clients_test_loaders[i] for i in sampled_client_indices]
@@ -797,13 +814,14 @@ def main():
                 for idx, (client, client_model, client_trainloader, client_testloader) in enumerate(
                             zip(sampled_clients, sampled_clients_models, sampled_clients_train_loaders, sampled_clients_test_loaders)):
                     client_start_time = time.time()
-                    print(
-                        f"round {epoch + 1}/{global_epoch}: "
-                        f"client {idx + 1}/{len(sampled_clients)} "
-                        f"cid={sampled_client_indices[idx]} "
-                        f"data_size={client.data_size} start",
-                        flush=True,
-                    )
+                    if args.verbose_logs:
+                        print(
+                            f"round {epoch + 1}/{global_epoch}: "
+                            f"client {idx + 1}/{len(sampled_clients)} "
+                            f"cid={sampled_client_indices[idx]} "
+                            f"data_size={client.data_size} start",
+                            flush=True,
+                        )
                     if latest_global_model is None:
                         client_update = local_update_first(model=client_model, dataloader=client_trainloader,
                                                                global_model=global_model,
@@ -823,14 +841,15 @@ def main():
                         accuracy_text = f" accuracy={accuracy:.4f}"
                     else:
                         accuracy_text = ""
-                    print(
-                        f"round {epoch + 1}/{global_epoch}: "
-                        f"client {idx + 1}/{len(sampled_clients)} "
-                        f"cid={sampled_client_indices[idx]}"
-                        f"{accuracy_text} "
-                        f"elapsed={time.time() - client_start_time:.2f}s",
-                        flush=True,
-                    )
+                    if args.verbose_logs:
+                        print(
+                            f"round {epoch + 1}/{global_epoch}: "
+                            f"client {idx + 1}/{len(sampled_clients)} "
+                            f"cid={sampled_client_indices[idx]}"
+                            f"{accuracy_text} "
+                            f"elapsed={time.time() - client_start_time:.2f}s",
+                            flush=True,
+                        )
                 # if latest_global_model is None:
                 #     client_update = local_update_first(model=clients_models[0], dataloader=clients_train_loaders[0],
                 #                                        global_model=global_model,
@@ -863,13 +882,19 @@ def main():
                     for global_param, update in zip(global_model.parameters(), aggregated_update):
                         global_param.add_(update)
                 en_time = time.time()
-                print(f"cost time:{en_time-st_time}")
                 global_accuracy, global_test_loss = evaluate(global_model, clients_test_loaders[0])
                 if (epoch >= 2) and (global_accuracy >= global_acc[-1]) and (global_acc[-1] >= global_acc[-2]) and all(global_accuracy > x for x in global_acc):
                     latest_global_model = copy.deepcopy(global_model)
                     for client in clients:
                         client.ba.noise_multiplier *= decay_factor
-                print('epoch:{}, global accuracy:{}'.format(epoch+1, global_accuracy))
+                print(
+                    'epoch:{}, global accuracy:{}, cost time:{:.2f}s'.format(
+                        epoch + 1,
+                        global_accuracy,
+                        en_time - st_time,
+                    ),
+                    flush=True,
+                )
                 global_acc.append(global_accuracy)
                 global_loss.append(global_test_loss)
 

@@ -68,6 +68,7 @@ def parse_args():
     parser.add_argument('--alpha', type=float, default=0.8)
     parser.add_argument('--phi', type=float, default=None, help="Alias for alpha; AdapL aggregation balance hyper-parameter")
     parser.add_argument('--eval_client_models', action='store_true', help="Evaluate each selected client model; baseline-style runs leave this off")
+    parser.add_argument('--verbose_logs', action='store_true', help="Print per-client and Fisher progress details")
 
 
 
