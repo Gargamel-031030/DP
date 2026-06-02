@@ -4,7 +4,46 @@ import numpy as np
 np.random.seed(10)
 BASE_DIR = Path(__file__).resolve().parent
 
-def set_epsilons(filename, N):
+
+SCENARIO_RATIOS = {
+    # Paper Scenario 1: 10% L1, 10% L2, 40% L3, 20% L4, 20% L5.
+    'scenario1': ([0.5, 1.0, 2.0, 4.0, 8.0], [0.1, 0.1, 0.4, 0.2, 0.2]),
+    # Paper Scenario 2: 20% L1, 20% L2, 40% L3, 10% L4, 10% L5.
+    'scenario2': ([0.5, 1.0, 2.0, 4.0, 8.0], [0.2, 0.2, 0.4, 0.1, 0.1]),
+    # Paper Scenario 3: 90% L1, 10% L5.
+    'scenario3': ([0.5, 1.0, 2.0, 4.0, 8.0], [0.9, 0.0, 0.0, 0.0, 0.1]),
+}
+
+
+SCENARIO3_FIXED = {
+    20: [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+         0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0],
+}
+
+
+def get_scenario_epsilons(scenario, N):
+    if scenario not in SCENARIO_RATIOS:
+        raise ValueError(f"Unknown privacy scenario: {scenario}")
+    if scenario == 'scenario3' and N in SCENARIO3_FIXED:
+        return list(SCENARIO3_FIXED[N])
+
+    eps_values, ratios = SCENARIO_RATIOS[scenario]
+    raw_counts = np.array(ratios, dtype=np.float64) * N
+    counts = np.floor(raw_counts).astype(int)
+    remainder = N - int(counts.sum())
+    if remainder > 0:
+        fractional_order = np.argsort(-(raw_counts - counts))
+        for idx in fractional_order[:remainder]:
+            counts[idx] += 1
+
+    epsilons = []
+    for epsilon, count in zip(eps_values, counts):
+        epsilons.extend([epsilon] * int(count))
+
+    return epsilons
+
+
+def set_epsilons(filename, N, scenario='scenario3'):
     print('=========Epsilons Info========')
     eps_path = BASE_DIR / 'epsfiles' / f'{filename}.txt'
     with open(eps_path, 'r') as rfile:
@@ -30,49 +69,8 @@ def set_epsilons(filename, N):
     for i in range(len(epsilons)):
         if epsilons[i] == 4.0:
             epsilons[i] = 8.0
-    # scen 3
-    if N == 20:
-        epsilons = [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0]
-    elif N == 30:
-        epsilons = [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0,
-                    8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    elif N == 40:
-        epsilons = [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0,
-                    8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    elif N == 50:
-        epsilons = [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0,
-                    8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
-                    8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    elif N == 10:
-        epsilons = [8.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-    elif N == 2:
-        epsilons = [0.5, 0.5]
-    # ## scen 1
-    # if N == 20:
-    #     epsilons = [0.5, 0.5, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0, 8.0, 8.0, 8.0, 8.0]
-    # elif N == 30:
-    #     epsilons = [0.5, 0.5, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0, 8.0, 8.0, 8.0, 8.0,
-    #                 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,]
-    # elif N == 40:
-    #     epsilons = [0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0]
-    # elif N == 50:
-    #     epsilons = [0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0]
-
-    # ## scen 2
-    # if N == 20:
-    #     epsilons = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0]
-    # elif N == 30:
-    #     epsilons = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 0.5, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0]
-    # elif N == 40:
-    #     epsilons = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0]
-    # elif N == 50:
-    #     epsilons = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0,
-    #                 0.5, 0.5, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0]
+    if scenario != 'file':
+        epsilons = get_scenario_epsilons(scenario, N)
+    print(f'privacy_scenario:{scenario}')
     print('max_epsilons:{}, total {} values.'.format(epsilons, len(epsilons)))
     return epsilons

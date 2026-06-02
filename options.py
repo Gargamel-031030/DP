@@ -17,6 +17,13 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=41, help="Random seed")
 
     parser.add_argument('--epsilon_file', type=str, default='gauss safety level', help="Target privacy budget epsilon")
+    parser.add_argument(
+        '--privacy_scenario',
+        type=str,
+        default='scenario3',
+        choices=['scenario1', 'scenario2', 'scenario3', 'file'],
+        help="Privacy budget distribution; scenario1 is the loosest paper scenario, scenario3 is the strictest",
+    )
     parser.add_argument('--target_delta', type=float, default=1e-5, help="Target privacy budget delta")
     parser.add_argument('--clipping_bound', type=float, default=1.0, help="Gradient clipping bound")
     parser.add_argument('--nm_decay', type=bool, default=True, help="noise_multiplier decay or not")

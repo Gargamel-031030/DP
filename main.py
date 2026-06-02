@@ -597,6 +597,7 @@ def build_result_csv_path():
             f"{dataset}_"
             f"{get_model_name()}_"
             f"{get_partition_name()}_"
+            f"{args.privacy_scenario}_"
             f"k{num_clients}_"
             f"sr{format_arg_value(user_sample_rate)}_"
             f"steps{local_epoch}_"
@@ -732,7 +733,7 @@ def main():
         for client_model in clients_models:
             client_model.load_state_dict(global_model.state_dict())
         ## get epsilon
-        priv_preferences = set_epsilons(target_epsilon, num_clients)
+        priv_preferences = set_epsilons(target_epsilon, num_clients, args.privacy_scenario)
         priv_preferences = np.array(priv_preferences)
         clients = []
         for cid in range(num_clients):
@@ -880,6 +881,7 @@ def main():
             'method': get_method_name(),
             'client_num': num_clients,
             'privacy_setting': target_epsilon,
+            'privacy_scenario': args.privacy_scenario,
             'iid': args.iid,
             'dir_alpha': args.dir_alpha,
             'client_fraction': user_sample_rate,
