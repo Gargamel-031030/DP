@@ -3,6 +3,7 @@ import sys
 import random
 import time
 from pathlib import Path
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -303,12 +304,12 @@ def local_update_first(model, dataloader, global_model, client):
     if args.verbose_logs:
         print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
-    u_loc, v_loc = [], []
+    important_masks = []
+    unimportant_masks = []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
-        u_param = (param * (fisher_value > fisher_threshold)).clone().detach()
-        v_param = (param * (fisher_value <= fisher_threshold)).clone().detach()
-        u_loc.append(u_param)
-        v_loc.append(v_param)
+        important_mask = fisher_value > fisher_threshold
+        important_masks.append(important_mask)
+        unimportant_masks.append(~important_mask)
 
     # for u_param, fisher_value in zip(u_loc, fisher_diag):
     #     print('该层初始fisher和为：{}'.format(torch.sum(fisher_value)))
@@ -317,8 +318,8 @@ def local_update_first(model, dataloader, global_model, client):
     #     print('该层ui的平均fisher和为：{}'.format(torch.sum(fisher_value * (u_param != 0)) / torch.nonzero(fisher_value * (u_param != 0)).size(0)))
 
     means = []
-    for u_param, fisher_value in zip(u_loc, fisher_diag):
-        meanl = get_important_fisher_mean(fisher_value, u_param != 0)
+    for important_mask, fisher_value in zip(important_masks, fisher_diag):
+        meanl = get_important_fisher_mean(fisher_value, important_mask)
         means.append(meanl)
     min_mean = torch.min(torch.stack(means))
 
@@ -332,20 +333,20 @@ def local_update_first(model, dataloader, global_model, client):
             output = model(sample_data)
 
             param_diffs = [u_new - u_old for u_new, u_old in zip(model.parameters(), w_glob)]
-            for idx, (param, u_param) in enumerate(zip(param_diffs, u_loc)):
-                param_diffs[idx] = param * (u_param != 0)
+            for idx, (param, important_mask) in enumerate(zip(param_diffs, important_masks)):
+                param_diffs[idx] = param * important_mask
 
             loss1 = customloss(output, sample_label, "R1", param_diffs, clipping_bound * client.ba.noise_multiplier)
             gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, only_inputs=True)
             gradient1 = list(gradient1)
-            for idx, (grad, u_param) in enumerate(zip(gradient1, u_loc)):
-                gradient1[idx] = grad * (u_param != 0)
+            for idx, (grad, important_mask) in enumerate(zip(gradient1, important_masks)):
+                gradient1[idx] = grad * important_mask
 
             loss2 = customloss(output, sample_label, "R2")
             gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
             gradient2 = list(gradient2)
-            for idx, (grad, v_param) in enumerate(zip(gradient2, v_loc)):
-                gradient2[idx] = grad * (v_param != 0)
+            for idx, (grad, unimportant_mask) in enumerate(zip(gradient2, unimportant_masks)):
+                gradient2[idx] = grad * unimportant_mask
 
             gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
             norm = 0
@@ -363,12 +364,12 @@ def local_update_first(model, dataloader, global_model, client):
 
         batch_gradient = [(grad / datas.size(0)) for grad in batch_gradient]
         noisy_gradients = []
-        for grad, fisher_value, meanl in zip(batch_gradient, fisher_diag, means):
+        for grad, important_mask, meanl in zip(batch_gradient, important_masks, means):
             sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
             noise = torch.normal(mean=0.0, std=clipping_bound * sigma, size=grad.shape)
             noise = noise / datas.size(0)
             noise = noise.to(device)
-            new_grad = grad + noise * (fisher_value > fisher_threshold)
+            new_grad = grad + noise * important_mask
             noisy_gradients.append(new_grad)
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
 
@@ -425,16 +426,16 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
     if args.verbose_logs:
         print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
-    u_loc, v_loc = [], []
+    important_masks = []
+    unimportant_masks = []
     for param, fisher_value in zip(model.parameters(), fisher_diag):
-        u_param = (param * (fisher_value > fisher_threshold)).clone().detach()
-        v_param = (param * (fisher_value <= fisher_threshold)).clone().detach()
-        u_loc.append(u_param)
-        v_loc.append(v_param)
+        important_mask = fisher_value > fisher_threshold
+        important_masks.append(important_mask)
+        unimportant_masks.append(~important_mask)
 
     means = []
-    for u_param, fisher_value in zip(u_loc, fisher_diag):
-        meanl = get_important_fisher_mean(fisher_value, u_param != 0)
+    for important_mask, fisher_value in zip(important_masks, fisher_diag):
+        meanl = get_important_fisher_mean(fisher_value, important_mask)
         means.append(meanl)
     min_mean = torch.min(torch.stack(means))
 
@@ -455,8 +456,8 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             output = model(sample_data)  # 前向传播
 
             param_diffs = [u_new - u_old for u_new, u_old in zip(model.parameters(), w_glob)]
-            for idx, (param, u_param) in enumerate(zip(param_diffs, u_loc)):
-                param_diffs[idx] = param * (u_param != 0)
+            for idx, (param, important_mask) in enumerate(zip(param_diffs, important_masks)):
+                param_diffs[idx] = param * important_mask
             if loss_sigma is None:
                 sigma = clipping_bound * client.ba.noise_multiplier
             else:
@@ -465,14 +466,14 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, create_graph=False,
                                             only_inputs=True)
             gradient1 = list(gradient1)
-            for idx, (grad, u_param) in enumerate(zip(gradient1, u_loc)):
-                gradient1[idx] = grad * (u_param != 0)
+            for idx, (grad, important_mask) in enumerate(zip(gradient1, important_masks)):
+                gradient1[idx] = grad * important_mask
 
             loss2 = customloss(output, sample_label, "R2")
             gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
             gradient2 = list(gradient2)
-            for idx, (grad, v_param) in enumerate(zip(gradient2, v_loc)):
-                gradient2[idx] = grad * (v_param != 0)
+            for idx, (grad, unimportant_mask) in enumerate(zip(gradient2, unimportant_masks)):
+                gradient2[idx] = grad * unimportant_mask
             gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
 
             for idx, (grad, lowest, highest) in enumerate(zip(gradient, lowests, highests)):
@@ -496,7 +497,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
                     batch_gradient[idx] = grad1 + grad2
         batch_gradient = [(grad / datas.size(0)) for grad in batch_gradient]
         noisy_gradients = []
-        for grad, fisher_value, meanl, norm in zip(batch_gradient, fisher_diag, means, norms):
+        for grad, important_mask, meanl, norm in zip(batch_gradient, important_masks, means, norms):
             sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
             std = (norm * sigma).item()
             if np.isnan(std) or std < 0:
@@ -504,7 +505,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             noise = torch.normal(mean=0.0, std=std, size=grad.shape)
             noise = noise / datas.size(0)
             noise = noise.to(device)
-            new_grad = grad + noise * (fisher_value > fisher_threshold)
+            new_grad = grad + noise * important_mask
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
@@ -617,7 +618,7 @@ def build_result_csv_path():
     return csv_dir / file_name
 
 
-def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
+def get_sampled_client_weights(sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
     if fedavg:
         sampled_client_weights = [sampled_client_data_size / sum(sampled_client_data_sizes)
                                   for sampled_client_data_size in sampled_client_data_sizes]
@@ -637,6 +638,18 @@ def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fed
     else:
         raise ValueError('No aggregate algo defined!')
 
+    return sampled_client_weights
+
+
+def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
+    sampled_client_weights = get_sampled_client_weights(
+        sampled_client_data_sizes,
+        sampled_client_eps,
+        fedavg=fedavg,
+        weiavg=weiavg,
+        deavg=deavg,
+    )
+
     aggregated_update = [
         torch.sum(
             torch.stack(
@@ -651,6 +664,36 @@ def aggregate(client_updates, sampled_client_data_sizes, sampled_client_eps, fed
     ]
 
     return aggregated_update
+
+
+def clone_state_dict(state_dict):
+    return OrderedDict((name, tensor.detach().cpu().clone()) for name, tensor in state_dict.items())
+
+
+def aggregate_client_states(client_states, sampled_client_data_sizes, sampled_client_eps, fedavg=False, weiavg=False, deavg=True):
+    if not client_states:
+        raise ValueError("Cannot aggregate an empty client state list.")
+
+    sampled_client_weights = get_sampled_client_weights(
+        sampled_client_data_sizes,
+        sampled_client_eps,
+        fedavg=fedavg,
+        weiavg=weiavg,
+        deavg=deavg,
+    )
+
+    aggregated_state = OrderedDict()
+    for name in client_states[0].keys():
+        first_value = client_states[0][name]
+        if torch.is_floating_point(first_value):
+            value = torch.zeros_like(first_value)
+            for state, weight in zip(client_states, sampled_client_weights):
+                value += state[name] * float(weight)
+            aggregated_state[name] = value
+        else:
+            aggregated_state[name] = first_value.clone()
+
+    return aggregated_state
 
 
 def main():
@@ -808,7 +851,7 @@ def main():
                 # download global model
                 for client_model in sampled_clients_models:
                     client_model.load_state_dict(global_model.state_dict())
-                clients_model_updates = []
+                clients_model_states = []
                 clients_accuracies = []
                 st_time = time.time()
                 for idx, (client, client_model, client_trainloader, client_testloader) in enumerate(
@@ -823,18 +866,18 @@ def main():
                             flush=True,
                         )
                     if latest_global_model is None:
-                        client_update = local_update_first(model=client_model, dataloader=client_trainloader,
-                                                               global_model=global_model,
-                                                               client=client)
+                        local_update_first(model=client_model, dataloader=client_trainloader,
+                                           global_model=global_model,
+                                           client=client)
                     else:
-                        client_update = local_update_decay(model=client_model, dataloader=client_trainloader,
-                                                               global_model=global_model,
-                                                               latest_global_model=latest_global_model,
-                                                               client=client)
+                        local_update_decay(model=client_model, dataloader=client_trainloader,
+                                           global_model=global_model,
+                                           latest_global_model=latest_global_model,
+                                           client=client)
                     # client_update = local_update_fedavg(model=client_model, dataloader=client_trainloader,
                     #                                     global_model=global_model,
                     #                                     client=client)
-                    clients_model_updates.append(client_update)
+                    clients_model_states.append(clone_state_dict(client_model.state_dict()))
                     if args.eval_client_models:
                         accuracy = test(client_model, client_testloader)
                         clients_accuracies.append(accuracy)
@@ -873,14 +916,15 @@ def main():
                 sampled_client_data_sizes = [client_data_sizes[i] for i in sampled_client_indices]
                 sampled_client_eps = [priv_preferences[i] for i in sampled_client_indices]
 
-                aggregated_update = aggregate(client_updates=clients_model_updates,
-                                                  sampled_client_data_sizes=sampled_client_data_sizes,
-                                                  sampled_client_eps=sampled_client_eps,
-                                                  fedavg=fedavg, weiavg=weiavg, deavg=deavg)
-                with torch.no_grad():
-                    global_model = global_model.to(device)
-                    for global_param, update in zip(global_model.parameters(), aggregated_update):
-                        global_param.add_(update)
+                aggregated_state = aggregate_client_states(
+                    client_states=clients_model_states,
+                    sampled_client_data_sizes=sampled_client_data_sizes,
+                    sampled_client_eps=sampled_client_eps,
+                    fedavg=fedavg,
+                    weiavg=weiavg,
+                    deavg=deavg,
+                )
+                global_model.load_state_dict(aggregated_state)
                 en_time = time.time()
                 global_accuracy, global_test_loss = evaluate(global_model, clients_test_loaders[0])
                 if (epoch >= 2) and (global_accuracy >= global_acc[-1]) and (global_acc[-1] >= global_acc[-2]) and all(global_accuracy > x for x in global_acc):
