@@ -28,8 +28,12 @@ def parse_args():
     )
     parser.add_argument('--target_delta', type=float, default=1e-5, help="Target privacy budget delta")
     parser.add_argument('--clipping_bound', type=float, default=1.0, help="Gradient clipping bound")
-    parser.add_argument('--nm_decay', type=bool, default=True, help="noise_multiplier decay or not")
+    parser.add_argument('--nm_decay', dest='nm_decay', action='store_true', default=False, help="Use moments-accountant search for decayed noise multipliers")
+    parser.add_argument('--no_nm_decay', dest='nm_decay', action='store_false', help="Use fast closed-form initial noise multipliers without decay search")
     parser.add_argument('--decay_factor', type=float, default=0.99, help="noise_multiplier decay factor")
+    parser.add_argument('--nm_decay_sigma_step', type=float, default=0.05, help="Sigma decrement step for nm_decay search")
+    parser.add_argument('--nm_decay_min_sigma', type=float, default=0.1, help="Lower bound for nm_decay sigma search")
+    parser.add_argument('--nm_decay_max_search_steps', type=int, default=200, help="Maximum iterations for nm_decay sigma search")
 
     parser.add_argument('--fisher_threshold', type=float, default=0.4, help="Fisher information threshold for parameter selection")
     parser.add_argument('--fisher_max_batches', type=int, default=0, help="Maximum batches used to estimate Fisher information; 0 means all batches")

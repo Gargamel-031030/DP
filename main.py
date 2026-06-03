@@ -774,6 +774,11 @@ def main():
         priv_preferences = np.array(priv_preferences)
         clients = []
         noise_multipliers = []
+        print(
+            "noise multiplier init: "
+            f"{'decay-search' if nm_decay else 'closed-form'}",
+            flush=True,
+        )
         for cid in range(num_clients):
             client = Client(train_data=clients_train_loaders[cid],
                                 test_data=clients_test_loaders[cid],
@@ -949,6 +954,7 @@ def main():
             'lr': args.lr,
             'momentum': args.momentum,
             'weight_decay': args.weight_decay,
+            'nm_decay': nm_decay,
             'seed': args.seed,
             'phi': alpha,
             'fisher_threshold': args.fisher_threshold,

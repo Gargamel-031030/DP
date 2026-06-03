@@ -16,8 +16,9 @@ def compute_noise_multiplier_decay(target_epsilon, target_delta, global_epoch, l
     init_sigma = 10.0
     last_sigma = init_sigma
     q = (1.0 * L) / N
-    flag = True
-    while flag:
+    search_steps = 0
+    while init_sigma >= args.nm_decay_min_sigma and search_steps < args.nm_decay_max_search_steps:
+        search_steps += 1
         accountant = MomentsAccountant(epsilon=target_epsilon, delta=target_delta, noise_multiplier=init_sigma)
         eps = 0.0
         for i in range(int(global_epoch)):
@@ -29,9 +30,16 @@ def compute_noise_multiplier_decay(target_epsilon, target_delta, global_epoch, l
         #     init_sigma -= 0.01
         if eps < target_epsilon:
             last_sigma = init_sigma
-            init_sigma -= 0.01
+            init_sigma -= args.nm_decay_sigma_step
         else:
-            flag = False
+            break
+    if search_steps >= args.nm_decay_max_search_steps or init_sigma < args.nm_decay_min_sigma:
+        print(
+            "Warning: nm_decay search reached its configured bound; "
+            f"using last safe sigma={last_sigma:.4f}. "
+            "Use --no_nm_decay for fast initialization.",
+            flush=True,
+        )
     return last_sigma
 
 
