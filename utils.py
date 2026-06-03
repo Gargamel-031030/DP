@@ -35,7 +35,7 @@ def compute_noise_multiplier_decay(target_epsilon, target_delta, global_epoch, l
     return last_sigma
 
 
-def compute_fisher_diag(model, dataloader, max_batches=0):
+def compute_fisher_diag(model, dataloader, max_batches=0, estimator="sample"):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -46,17 +46,25 @@ def compute_fisher_diag(model, dataloader, max_batches=0):
     for batch_idx, (data, labels) in enumerate(dataloader):
         if max_batches > 0 and batch_idx >= max_batches:
             break
-        data, labels = data.to(device), labels.to(device)
+        use_non_blocking = torch.cuda.is_available()
+        data = data.to(device, non_blocking=use_non_blocking)
+        labels = labels.to(device, non_blocking=use_non_blocking)
         num_samples += labels.size(0)
 
         # Calculate output log probabilities
         log_probs = torch.nn.functional.log_softmax(model(data), dim=1)
+        selected_log_probs = log_probs.gather(1, labels.view(-1, 1)).squeeze(1)
 
-        for i, label in enumerate(labels):
-            log_prob = log_probs[i, label]
+        if estimator == "batch":
+            grad1 = autograd.grad(selected_log_probs.mean(), model.parameters(), create_graph=False)
+            for fisher_diag_value, grad_value in zip(fisher_diag, grad1):
+                fisher_diag_value.add_(grad_value.detach() ** 2 * labels.size(0))
+            del grad1
+            continue
+
+        for i, log_prob in enumerate(selected_log_probs):
 
             # Calculate first-order derivatives (gradients)
-            model.zero_grad()
             retain_graph = i < labels.size(0) - 1
             grad1 = autograd.grad(log_prob, model.parameters(), create_graph=False, retain_graph=retain_graph)
 

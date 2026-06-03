@@ -11,6 +11,8 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=16, help="Batch size")
     parser.add_argument('--test_batch_size', type=int, default=256, help="Test batch size")
     parser.add_argument('--num_workers', type=int, default=0, help="DataLoader worker processes")
+    parser.add_argument('--prefetch_factor', type=int, default=2, help="DataLoader prefetch factor when num_workers > 0")
+    parser.add_argument('--persistent_workers', action='store_true', help="Keep DataLoader workers alive between iterations")
 
     parser.add_argument('--user_sample_rate', type=float, default=0.8, help="Sample rate for user sampling")
     parser.add_argument('--client_fraction', type=float, default=None, help="Alias for user_sample_rate; matches baseline naming")
@@ -31,6 +33,7 @@ def parse_args():
 
     parser.add_argument('--fisher_threshold', type=float, default=0.4, help="Fisher information threshold for parameter selection")
     parser.add_argument('--fisher_max_batches', type=int, default=0, help="Maximum batches used to estimate Fisher information; 0 means all batches")
+    parser.add_argument('--fisher_estimator', type=str, default='sample', choices=['sample', 'batch'], help="sample keeps per-example Fisher; batch uses faster mini-batch gradient approximation")
     parser.add_argument('--gamma', type=float, default=10.0, help="Layer-wise Fisher noise scaling hyper-parameter")
     parser.add_argument('--max_clip_norm', type=float, default=4.0, help="Maximum layer-wise clipped gradient norm cmax")
     parser.add_argument('--lambda_1', type=float, default=0.1, help="Lambda value for EWC regularization term")

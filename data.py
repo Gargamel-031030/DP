@@ -18,6 +18,14 @@ torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 
 
+def get_worker_kwargs():
+    worker_kwargs = {}
+    if args.num_workers > 0:
+        worker_kwargs["prefetch_factor"] = args.prefetch_factor
+        worker_kwargs["persistent_workers"] = args.persistent_workers
+    return worker_kwargs
+
+
 def hetero_dir_partition(targets, num_clients, num_classes, dir_alpha, min_require_size=1):
     targets = np.asarray(targets)
     rng = np.random.default_rng(args.seed)
@@ -125,6 +133,7 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
+        **get_worker_kwargs(),
     )
 
     for i in range(num_clients):
@@ -137,6 +146,7 @@ def get_noniid_fmnist(alpha: float, num_clients: int) -> Tuple[List[DataLoader],
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),
             generator=generator,
+            **get_worker_kwargs(),
         )
 
         train_loaders.append(train_loader)
@@ -201,6 +211,7 @@ def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: i
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
+        **get_worker_kwargs(),
     )
 
     for i in range(num_clients):
@@ -213,6 +224,7 @@ def get_cifar_loaders(dataset_cls, root, mean, std, alpha: float, num_clients: i
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),
             generator=generator,
+            **get_worker_kwargs(),
         )
 
         train_loaders.append(train_loader)

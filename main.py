@@ -160,6 +160,23 @@ def get_clip_rate(norm, bound):
     return max(1.0, norm_value / bound)
 
 
+def move_batch_to_device(datas, labels):
+    use_non_blocking = torch.cuda.is_available()
+    return datas.to(device, non_blocking=use_non_blocking), labels.to(device, non_blocking=use_non_blocking)
+
+
+def get_masked_param_diffs(model, reference_params, important_masks):
+    return [
+        (param - reference_param) * important_mask
+        for param, reference_param, important_mask in zip(model.parameters(), reference_params, important_masks)
+    ]
+
+
+def get_regularization_gradient(model, param_diffs):
+    reg_loss = torch.sum(torch.stack([torch.norm(diff) for diff in param_diffs]))
+    return list(torch.autograd.grad(reg_loss, model.parameters(), only_inputs=True))
+
+
 def get_fisher_batch_limit(dataloader):
     if args.fisher_max_batches > 0:
         return min(args.fisher_max_batches, len(dataloader))
@@ -210,6 +227,10 @@ def select_clients(candidates, round_idx):
 
 def make_train_loader(client_dataset, client_id):
     generator = torch.Generator().manual_seed(args.seed + client_id)
+    worker_kwargs = {}
+    if args.num_workers > 0:
+        worker_kwargs["prefetch_factor"] = args.prefetch_factor
+        worker_kwargs["persistent_workers"] = args.persistent_workers
     return DataLoader(
         client_dataset,
         batch_size=batch_size,
@@ -217,16 +238,22 @@ def make_train_loader(client_dataset, client_id):
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
         generator=generator,
+        **worker_kwargs,
     )
 
 
 def make_shared_test_loaders(test_dataset):
+    worker_kwargs = {}
+    if args.num_workers > 0:
+        worker_kwargs["prefetch_factor"] = args.prefetch_factor
+        worker_kwargs["persistent_workers"] = args.persistent_workers
     shared_test_loader = DataLoader(
         test_dataset,
         batch_size=args.test_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
+        **worker_kwargs,
     )
     return [shared_test_loader for _ in range(num_clients)]
 
@@ -240,14 +267,13 @@ def local_update_fedavg(model, dataloader, global_model, client):
 
     model.train()
     for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+        datas, labels = move_batch_to_device(datas, labels)
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 将batch中的每个数据单独处理
         batch_gradient = None
         for i in range(datas.size(0)):  # data.size(0)是batch的大小
             sample_data = datas[i].unsqueeze(0)  # 取出第i个样本，并保持维度一致
-            sample_data = sample_data.to(device)
             sample_label = labels[i].unsqueeze(0)  # 取出对应的标签，并保持维度一致
-            sample_label = sample_label.to(device)
             # optimizer1.zero_grad()  # 清空梯度
             output = model(sample_data)  # 前向传播
             loss = F.cross_entropy(output, sample_label)
@@ -267,9 +293,8 @@ def local_update_fedavg(model, dataloader, global_model, client):
         noisy_gradients = []
         for grad in batch_gradient:
             sigma = client.ba.noise_multiplier
-            noise = torch.normal(mean=0.0, std=clipping_bound * sigma, size=grad.shape)
+            noise = torch.randn_like(grad) * (clipping_bound * sigma)
             noise = noise / datas.size(0)
-            noise = noise.to(device)
             new_grad = grad + noise
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
@@ -297,19 +322,15 @@ def local_update_first(model, dataloader, global_model, client):
     if args.verbose_logs:
         print(
             f"Computing Fisher: data_size={client.data_size}, "
-            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}, "
+            f"estimator={args.fisher_estimator}",
             flush=True,
         )
-    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
+    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches, args.fisher_estimator)
     if args.verbose_logs:
         print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
-    important_masks = []
-    unimportant_masks = []
-    for param, fisher_value in zip(model.parameters(), fisher_diag):
-        important_mask = fisher_value > fisher_threshold
-        important_masks.append(important_mask)
-        unimportant_masks.append(~important_mask)
+    important_masks = [fisher_value > fisher_threshold for fisher_value in fisher_diag]
 
     # for u_param, fisher_value in zip(u_loc, fisher_diag):
     #     print('该层初始fisher和为：{}'.format(torch.sum(fisher_value)))
@@ -326,29 +347,21 @@ def local_update_first(model, dataloader, global_model, client):
     model.train()
     momentum_buffers = init_momentum_buffers(model)
     for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+        datas, labels = move_batch_to_device(datas, labels)
+        param_diffs = get_masked_param_diffs(model, w_glob, important_masks)
+        regularization_gradient = get_regularization_gradient(model, param_diffs)
         batch_gradient = None
         for i in range(datas.size(0)):
-            sample_data = datas[i].unsqueeze(0).to(device)
-            sample_label = labels[i].unsqueeze(0).to(device)
+            sample_data = datas[i].unsqueeze(0)
+            sample_label = labels[i].unsqueeze(0)
             output = model(sample_data)
 
-            param_diffs = [u_new - u_old for u_new, u_old in zip(model.parameters(), w_glob)]
-            for idx, (param, important_mask) in enumerate(zip(param_diffs, important_masks)):
-                param_diffs[idx] = param * important_mask
-
-            loss1 = customloss(output, sample_label, "R1", param_diffs, clipping_bound * client.ba.noise_multiplier)
-            gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, only_inputs=True)
-            gradient1 = list(gradient1)
-            for idx, (grad, important_mask) in enumerate(zip(gradient1, important_masks)):
-                gradient1[idx] = grad * important_mask
-
-            loss2 = customloss(output, sample_label, "R2")
-            gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
-            gradient2 = list(gradient2)
-            for idx, (grad, unimportant_mask) in enumerate(zip(gradient2, unimportant_masks)):
-                gradient2[idx] = grad * unimportant_mask
-
-            gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
+            loss = customloss(output, sample_label, "R2")
+            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
+            gradient = [
+                grad + reg_grad * important_mask
+                for grad, reg_grad, important_mask in zip(gradient, regularization_gradient, important_masks)
+            ]
             norm = 0
             for grad in gradient:
                 current_norm = torch.norm(grad, p=2)
@@ -366,20 +379,17 @@ def local_update_first(model, dataloader, global_model, client):
         noisy_gradients = []
         for grad, important_mask, meanl in zip(batch_gradient, important_masks, means):
             sigma = get_layer_noise_multiplier(client.ba.noise_multiplier, meanl, min_mean)
-            noise = torch.normal(mean=0.0, std=clipping_bound * sigma, size=grad.shape)
+            noise = torch.randn_like(grad) * (clipping_bound * sigma)
             noise = noise / datas.size(0)
-            noise = noise.to(device)
             new_grad = grad + noise * important_mask
             noisy_gradients.append(new_grad)
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
 
     client.ba.update(client.loc_steps)
 
-    with torch.no_grad():
-        update = [(new_param - old_param).clone() for new_param, old_param in zip(model.parameters(), w_glob)]
     model = model.to('cpu')
     global_model = global_model.to('cpu')
-    return update
+    return None
 
 
 ## 先根据对数概率计算fisher信息矩阵，进而划分ui和vi；
@@ -419,19 +429,15 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
     if args.verbose_logs:
         print(
             f"Computing Fisher: data_size={client.data_size}, "
-            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}",
+            f"batches={get_fisher_batch_limit(dataloader)}/{len(dataloader)}, "
+            f"estimator={args.fisher_estimator}",
             flush=True,
         )
-    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches)
+    fisher_diag = compute_fisher_diag(model, dataloader, args.fisher_max_batches, args.fisher_estimator)
     if args.verbose_logs:
         print(f"Finished Fisher: data_size={client.data_size}", flush=True)
 
-    important_masks = []
-    unimportant_masks = []
-    for param, fisher_value in zip(model.parameters(), fisher_diag):
-        important_mask = fisher_value > fisher_threshold
-        important_masks.append(important_mask)
-        unimportant_masks.append(~important_mask)
+    important_masks = [fisher_value > fisher_threshold for fisher_value in fisher_diag]
 
     means = []
     for important_mask, fisher_value in zip(important_masks, fisher_diag):
@@ -441,55 +447,43 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
 
     model.train()
     momentum_buffers = init_momentum_buffers(model)
-    loss_sigma = None
     for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+        datas, labels = move_batch_to_device(datas, labels)
+        param_diffs = get_masked_param_diffs(model, w_glob, important_masks)
+        regularization_gradient = get_regularization_gradient(model, param_diffs)
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 将batch中的每个数据单独处理
         batch_gradient = None
         norms = []
         for i in range(datas.size(0)):  # data.size(0)是batch的大小
             sample_data = datas[i].unsqueeze(0)  # 取出第i个样本，并保持维度一致
-            sample_data = sample_data.to(device)
             sample_label = labels[i].unsqueeze(0)  # 取出对应的标签，并保持维度一致
-            sample_label = sample_label.to(device)
             # optimizer1.zero_grad()  # 清空梯度
             output = model(sample_data)  # 前向传播
 
-            param_diffs = [u_new - u_old for u_new, u_old in zip(model.parameters(), w_glob)]
-            for idx, (param, important_mask) in enumerate(zip(param_diffs, important_masks)):
-                param_diffs[idx] = param * important_mask
-            if loss_sigma is None:
-                sigma = clipping_bound * client.ba.noise_multiplier
-            else:
-                sigma = loss_sigma
-            loss1 = customloss(output, sample_label, "R1", param_diffs, sigma)
-            gradient1 = torch.autograd.grad(loss1, model.parameters(), retain_graph=True, create_graph=False,
-                                            only_inputs=True)
-            gradient1 = list(gradient1)
-            for idx, (grad, important_mask) in enumerate(zip(gradient1, important_masks)):
-                gradient1[idx] = grad * important_mask
-
-            loss2 = customloss(output, sample_label, "R2")
-            gradient2 = torch.autograd.grad(loss2, model.parameters(), only_inputs=True)
-            gradient2 = list(gradient2)
-            for idx, (grad, unimportant_mask) in enumerate(zip(gradient2, unimportant_masks)):
-                gradient2[idx] = grad * unimportant_mask
-            gradient = [grad1 + grad2 for grad1, grad2 in zip(gradient1, gradient2)]
+            loss = customloss(output, sample_label, "R2")
+            gradient = torch.autograd.grad(loss, model.parameters(), only_inputs=True)
+            gradient = [
+                grad + reg_grad * important_mask
+                for grad, reg_grad, important_mask in zip(gradient, regularization_gradient, important_masks)
+            ]
 
             for idx, (grad, lowest, highest) in enumerate(zip(gradient, lowests, highests)):
                 current_grad = torch.max(grad, lowest)
                 current_grad = torch.min(current_grad, highest)
-                if torch.norm(current_grad, p=2) > args.max_clip_norm:
-                    clip_rate = max(1.0, torch.norm(current_grad, p=2).item() / args.max_clip_norm)
+                current_norm = torch.norm(current_grad, p=2)
+                if current_norm > args.max_clip_norm:
+                    clip_rate = max(1.0, current_norm.item() / args.max_clip_norm)
                     current_grad = current_grad / clip_rate
+                    current_norm = torch.norm(current_grad, p=2)
                 gradient[idx] = current_grad
-                if (i == 0) and (torch.norm(current_grad, p=2) < 0.5):
+                if (i == 0) and (current_norm < 0.5):
                     norms.append(torch.tensor(0.5, device=device))
-                elif (i == 0) and (torch.norm(current_grad, p=2) >= 0.5):
-                    norms.append(torch.norm(current_grad, p=2))
+                elif i == 0:
+                    norms.append(current_norm)
                 else:
-                    if torch.norm(current_grad, p=2) > norms[idx]:
-                        norms[idx] = torch.norm(current_grad, p=2)
+                    if current_norm > norms[idx]:
+                        norms[idx] = current_norm
             if batch_gradient is None:
                 batch_gradient = gradient
             else:
@@ -502,22 +496,18 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             std = (norm * sigma).item()
             if np.isnan(std) or std < 0:
                 std = 0.5
-            noise = torch.normal(mean=0.0, std=std, size=grad.shape)
+            noise = torch.randn_like(grad) * std
             noise = noise / datas.size(0)
-            noise = noise.to(device)
             new_grad = grad + noise * important_mask
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
-        loss_sigma = min(norms) * client.ba.noise_multiplier
     client.ba.update(client.loc_steps)
 
-    with torch.no_grad():
-        update = [(new_param - old_param).clone() for new_param, old_param in zip(model.parameters(), w_glob)]
     model.to('cpu')
     global_model.to('cpu')
     latest_global_model.to('cpu')
-    return update
+    return None
 
 
 def evaluate(client_model, client_testloader):
@@ -530,7 +520,7 @@ def evaluate(client_model, client_testloader):
     total_loss = 0.0
     with torch.no_grad():
         for data, labels in client_testloader:
-            data, labels = data.to(device), labels.to(device)
+            data, labels = move_batch_to_device(data, labels)
             outputs = client_model(data)
             total_loss += F.cross_entropy(outputs, labels, reduction='sum').item()
             _, predicted = torch.max(outputs, 1)
@@ -962,6 +952,8 @@ def main():
             'seed': args.seed,
             'phi': alpha,
             'fisher_threshold': args.fisher_threshold,
+            'fisher_max_batches': args.fisher_max_batches,
+            'fisher_estimator': args.fisher_estimator,
             'gamma': args.gamma,
             'max_clip_norm': args.max_clip_norm,
         })
