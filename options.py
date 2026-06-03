@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument('--nm_decay_sigma_step', type=float, default=0.05, help="Sigma decrement step for nm_decay search")
     parser.add_argument('--nm_decay_min_sigma', type=float, default=0.1, help="Lower bound for nm_decay sigma search")
     parser.add_argument('--nm_decay_max_search_steps', type=int, default=200, help="Maximum iterations for nm_decay sigma search")
+    parser.add_argument('--noise_multiplier_override', type=float, default=None, help="Manually fix all client noise multipliers; overrides nm_decay and closed-form calculation")
 
     parser.add_argument('--fisher_threshold', type=float, default=0.4, help="Fisher information threshold for parameter selection")
     parser.add_argument('--fisher_max_batches', type=int, default=0, help="Maximum batches used to estimate Fisher information; 0 means all batches")
@@ -94,4 +95,6 @@ def parse_args():
         args.iid = True
     elif args.partition in {'non-iid', 'dirichlet'}:
         args.iid = False
+    if args.noise_multiplier_override is not None and args.noise_multiplier_override < 0:
+        parser.error("--noise_multiplier_override must be non-negative.")
     return args

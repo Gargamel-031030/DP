@@ -774,9 +774,13 @@ def main():
         priv_preferences = np.array(priv_preferences)
         clients = []
         noise_multipliers = []
+        if args.noise_multiplier_override is not None:
+            nm_init_method = f"manual override={args.noise_multiplier_override:g}"
+        else:
+            nm_init_method = "decay-search" if nm_decay else "closed-form"
         print(
             "noise multiplier init: "
-            f"{'decay-search' if nm_decay else 'closed-form'}",
+            f"{nm_init_method}",
             flush=True,
         )
         for cid in range(num_clients):
@@ -787,7 +791,9 @@ def main():
                                 loc_steps=local_epoch,
                                 data_size=client_data_sizes[cid])
             client_eps = priv_preferences[cid]
-            if nm_decay:
+            if args.noise_multiplier_override is not None:
+                nm = args.noise_multiplier_override
+            elif nm_decay:
                 nm = compute_noise_multiplier_decay(target_epsilon=client_eps, target_delta=target_delta,
                                                         global_epoch=global_epoch*user_sample_rate, local_steps=local_epoch,
                                                         L=batch_size, N=client_data_sizes[cid], decay_factor=decay_factor)
@@ -955,6 +961,7 @@ def main():
             'momentum': args.momentum,
             'weight_decay': args.weight_decay,
             'nm_decay': nm_decay,
+            'noise_multiplier_override': args.noise_multiplier_override,
             'seed': args.seed,
             'phi': alpha,
             'fisher_threshold': args.fisher_threshold,
