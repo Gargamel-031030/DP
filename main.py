@@ -183,14 +183,14 @@ def get_fisher_batch_limit(dataloader):
     return len(dataloader)
 
 
-def iter_local_batches(dataloader, local_steps):
-    train_iter = iter(dataloader)
-    for _ in range(local_steps):
-        try:
-            yield next(train_iter)
-        except StopIteration:
-            train_iter = iter(dataloader)
-            yield next(train_iter)
+def get_local_minibatch_steps(dataloader):
+    return args.local_epoch * len(dataloader)
+
+
+def iter_local_minibatches(dataloader):
+    for _ in range(args.local_epoch):
+        for batch in dataloader:
+            yield batch
 
 
 def init_momentum_buffers(model):
@@ -266,7 +266,7 @@ def local_update_fedavg(model, dataloader, global_model, client):
     momentum_buffers = init_momentum_buffers(model)
 
     model.train()
-    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+    for datas, labels in iter_local_minibatches(dataloader):
         datas, labels = move_batch_to_device(datas, labels)
         # w_last_round = [param.clone().detach() for param in model.parameters()]
         # 将batch中的每个数据单独处理
@@ -299,7 +299,7 @@ def local_update_fedavg(model, dataloader, global_model, client):
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
-    client.ba.update(client.loc_steps)
+    client.ba.update(get_local_minibatch_steps(dataloader))
 
     with torch.no_grad():
         update = [(new_param - old_param).clone() for new_param, old_param in zip(model.parameters(), w_glob)]
@@ -309,7 +309,7 @@ def local_update_fedavg(model, dataloader, global_model, client):
 
 
 ## 先根据对数概率计算fisher信息矩阵，进而划分ui和vi；
-## 每个local_epoch取一个batch的训练数据，进行两步操作：
+## 每个local_epoch遍历完整训练集，并在每个minibatch后进行两步操作：
 ##      1.ui以 交叉熵损失+(ui-ui_last_round)的范数 计算梯度，默认裁剪范数，并添加高斯噪声，标准差std：default_clip_norm * init_nm，更新模型参数
 ##      2.vi以 交叉熵损失 计算梯度，默认裁剪范数，不添加噪声，更新模型参数
 def local_update_first(model, dataloader, global_model, client):
@@ -346,7 +346,7 @@ def local_update_first(model, dataloader, global_model, client):
 
     model.train()
     momentum_buffers = init_momentum_buffers(model)
-    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+    for datas, labels in iter_local_minibatches(dataloader):
         datas, labels = move_batch_to_device(datas, labels)
         param_diffs = get_masked_param_diffs(model, w_glob, important_masks)
         regularization_gradient = get_regularization_gradient(model, param_diffs)
@@ -385,7 +385,7 @@ def local_update_first(model, dataloader, global_model, client):
             noisy_gradients.append(new_grad)
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
 
-    client.ba.update(client.loc_steps)
+    client.ba.update(get_local_minibatch_steps(dataloader))
 
     model = model.to('cpu')
     global_model = global_model.to('cpu')
@@ -393,7 +393,7 @@ def local_update_first(model, dataloader, global_model, client):
 
 
 ## 先根据对数概率计算fisher信息矩阵，进而划分ui和vi；
-## 每个local_epoch取一个batch的训练数据，进行两步操作：
+## 每个local_epoch遍历完整训练集，并在每个minibatch后进行两步操作：
 ##      1.ui以 交叉熵损失+(ui-global_ui)的范数 计算梯度，
 ##      2.vi以 交叉熵损失 计算梯度，
 ##      将两组梯度按照层组合，每层自适应裁剪范数，并分层对ui的梯度添加高斯噪声，标准差std：clip_norm(k) * nm(k)
@@ -447,7 +447,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
 
     model.train()
     momentum_buffers = init_momentum_buffers(model)
-    for datas, labels in iter_local_batches(dataloader, args.local_epoch):
+    for datas, labels in iter_local_minibatches(dataloader):
         datas, labels = move_batch_to_device(datas, labels)
         param_diffs = get_masked_param_diffs(model, w_glob, important_masks)
         regularization_gradient = get_regularization_gradient(model, param_diffs)
@@ -502,7 +502,7 @@ def local_update_decay(model, dataloader, global_model, latest_global_model, cli
             noisy_gradients.append(new_grad)
         # Update model weights with gradients and learning rate
         apply_local_gradients(model, noisy_gradients, momentum_buffers)
-    client.ba.update(client.loc_steps)
+    client.ba.update(get_local_minibatch_steps(dataloader))
 
     model.to('cpu')
     global_model.to('cpu')
@@ -784,26 +784,27 @@ def main():
             flush=True,
         )
         for cid in range(num_clients):
+            client_local_steps = get_local_minibatch_steps(clients_train_loaders[cid])
             client = Client(train_data=clients_train_loaders[cid],
                                 test_data=clients_test_loaders[cid],
                                 batch_size=batch_size,
                                 model=clients_models[cid],
-                                loc_steps=local_epoch,
+                                loc_steps=client_local_steps,
                                 data_size=client_data_sizes[cid])
             client_eps = priv_preferences[cid]
             if args.noise_multiplier_override is not None:
                 nm = args.noise_multiplier_override
             elif nm_decay:
                 nm = compute_noise_multiplier_decay(target_epsilon=client_eps, target_delta=target_delta,
-                                                        global_epoch=global_epoch*user_sample_rate, local_steps=local_epoch,
+                                                        global_epoch=global_epoch*user_sample_rate, local_steps=client_local_steps,
                                                         L=batch_size, N=client_data_sizes[cid], decay_factor=decay_factor)
                 # nm = compute_noise_multiplier(N=client_data_sizes[cid], L=batch_size, epsilon=client_eps,
                 #                               delta=target_delta,
-                #                               T=global_epoch * local_epoch * user_sample_rate)
+                #                               T=global_epoch * client_local_steps * user_sample_rate)
 
             else:
                 nm = compute_noise_multiplier(N=client_data_sizes[cid], L=batch_size, epsilon=client_eps, delta=target_delta,
-                                                  T=global_epoch*local_epoch*user_sample_rate)
+                                                  T=global_epoch*client_local_steps*user_sample_rate)
             noise_multipliers.append(nm)
             if args.verbose_logs:
                 print(f"initial nm:{nm}")
@@ -943,6 +944,7 @@ def main():
                 global_acc.append(global_accuracy)
                 global_loss.append(global_test_loss)
 
+        local_minibatch_steps = [client.loc_steps for client in clients]
         acc = pd.DataFrame({
             'round': list(range(1, len(global_acc) + 1)),
             'test_loss': global_loss,
@@ -956,6 +958,9 @@ def main():
             'dir_alpha': args.dir_alpha,
             'client_fraction': user_sample_rate,
             'local_steps': local_epoch,
+            'local_minibatch_steps_min': min(local_minibatch_steps),
+            'local_minibatch_steps_max': max(local_minibatch_steps),
+            'local_minibatch_steps_mean': float(np.mean(local_minibatch_steps)),
             'batch_size': batch_size,
             'lr': args.lr,
             'momentum': args.momentum,
